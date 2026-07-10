@@ -48,11 +48,8 @@ internal class HotKeyTracker
         {
             _hotKeys.TryAdd(key, 0);
 
-            // If too many hot keys, trim them
-            if (_hotKeys.Count > _maxHotKeys)
-            {
-                TrimHotKeys();
-            }
+            // If too many hot keys, trim them (check inside lock to avoid race condition)
+            TrimHotKeysIfNeeded();
         }
     }
 
@@ -71,33 +68,43 @@ internal class HotKeyTracker
         _hotKeys.TryRemove(key, out _);
     }
 
-    private void TrimHotKeys()
+    private void TrimHotKeysIfNeeded()
     {
+        // Quick check before acquiring lock
+        if (_hotKeys.Count <= _maxHotKeys || DateTime.UtcNow - _lastTrim < TimeSpan.FromSeconds(30))
+            return;
+
         lock (_trimLock)
         {
+            // Double-check inside lock to prevent redundant trimming
             if (DateTime.UtcNow - _lastTrim < TimeSpan.FromSeconds(30))
                 return;
 
             if (_hotKeys.Count <= _maxHotKeys)
                 return;
 
-            // Keep only keys with highest access count
-            var topKeys = _stats
-                .OrderByDescending(kv => kv.Value.Count)
-                .Take(_maxHotKeys)
-                .Select(kv => kv.Key)
-                .ToHashSet();
-
-            foreach (var key in _hotKeys.Keys.ToList())
-            {
-                if (!topKeys.Contains(key))
-                {
-                    _hotKeys.TryRemove(key, out _);
-                }
-            }
-
-            _lastTrim = DateTime.UtcNow;
+            TrimHotKeys();
         }
+    }
+
+    private void TrimHotKeys()
+    {
+        // Keep only keys with highest access count
+        var topKeys = _stats
+            .OrderByDescending(kv => kv.Value.Count)
+            .Take(_maxHotKeys)
+            .Select(kv => kv.Key)
+            .ToHashSet();
+
+        foreach (var key in _hotKeys.Keys.ToList())
+        {
+            if (!topKeys.Contains(key))
+            {
+                _hotKeys.TryRemove(key, out _);
+            }
+        }
+
+        _lastTrim = DateTime.UtcNow;
     }
 
     public void Cleanup()
@@ -105,13 +112,20 @@ internal class HotKeyTracker
         if (!_isEnabled) return;
 
         var cutoff = DateTime.UtcNow.Subtract(TimeSpan.FromHours(1));
-        foreach (var key in _stats.Keys.ToList())
+        var keysToRemove = new List<string>();
+
+        foreach (var key in _stats.Keys)
         {
             if (_stats.TryGetValue(key, out var stat) && stat.LastAccess < cutoff)
             {
-                _stats.TryRemove(key, out _);
-                _hotKeys.TryRemove(key, out _);
+                keysToRemove.Add(key);
             }
+        }
+
+        foreach (var key in keysToRemove)
+        {
+            _stats.TryRemove(key, out _);
+            _hotKeys.TryRemove(key, out _);
         }
     }
 }

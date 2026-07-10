@@ -163,7 +163,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         if (cacheResult.HasValue)
             return cacheResult.Value!;
 
-        if (!_redis.IsConnected)
+        if (!_redis.IsRedisConnected())
         {
             _logger.LogWarning("Redis is disconnected. GetOrSetAsync will use factory directly for key: {Key}", cacheKey.Key);
             return await factory(cancellationToken).ConfigureAwait(false);
@@ -173,7 +173,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         {
             return await _stampedeProtector.ExecuteAsync(
                 cacheKey.Key,
-                ct => GetFromCacheAndDeserializeAsync<T>(cacheKey, ct),
+                ct => GetFromCacheAsync<T>(cacheKey, ct),
                 factory,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -232,7 +232,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
 
     private bool ShouldStoreInMemory(CacheKey cacheKey)
     {
-        if (!_redis.IsConnected)
+        if (!_redis.IsRedisConnected())
             return false;
 
         return cacheKey.StoreType switch
@@ -291,6 +291,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
 
                 var value = _serializer.Deserialize<T>(data);
 
+                // Store non-null values in memory cache if applicable
                 if (value is not null && ShouldStoreInMemory(cacheKey))
                 {
                     SetInMemory(cacheKey.Key, value, cacheKey);
@@ -306,13 +307,6 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
 
         _statistics.RecordMiss(cacheKey.Key);
         return CacheResult<T>.Miss;
-    }
-
-    // Wraps GetFromCacheAsync returning just the value (used by StampedeProtector's double-check)
-    private async Task<T> GetFromCacheAndDeserializeAsync<T>(CacheKey cacheKey, CancellationToken cancellationToken)
-    {
-        var result = await GetFromCacheAsync<T>(cacheKey, cancellationToken).ConfigureAwait(false);
-        return result.HasValue ? result.Value! : default!;
     }
 
     private T? DeserializeData<T>(byte[] data, string logKey)
@@ -401,6 +395,8 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         var retryCount = _options.RedisRetryCount;
         var baseDelay = _options.RedisRetryBaseDelayMs;
 
+        Exception? lastException = null;
+
         for (int attempt = 0; attempt <= retryCount; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -411,6 +407,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
             }
             catch (Exception ex) when (attempt < retryCount && ex is not OperationCanceledException)
             {
+                lastException = ex;
                 _logger.LogWarning(ex,
                     "Redis operation failed (attempt {Attempt}/{MaxRetries}). Retrying...",
                     attempt + 1, retryCount);
@@ -420,7 +417,8 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
             }
         }
 
-        return await operation().ConfigureAwait(false);
+        // All retries exhausted - throw the last exception
+        throw new RedisException($"Redis operation failed after {retryCount + 1} attempts", lastException);
     }
 
     // ================================================================

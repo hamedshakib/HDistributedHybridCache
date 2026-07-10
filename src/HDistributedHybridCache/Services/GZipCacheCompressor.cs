@@ -14,9 +14,10 @@ public class GZipCacheCompressor : ICacheCompressor
             return data ?? Array.Empty<byte>();
 
         using var output = new MemoryStream();
-        using (var gzip = new GZipStream(output, CompressionLevel.Fastest, leaveOpen: false))
+        using (var gzip = new GZipStream(output, CompressionLevel.Fastest, leaveOpen: true))
         {
             gzip.Write(data, 0, data.Length);
+            gzip.Flush(); // Ensure all data is written to the underlying stream
         }
         return output.ToArray();
     }

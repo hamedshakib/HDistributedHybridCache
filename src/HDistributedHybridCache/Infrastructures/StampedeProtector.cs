@@ -26,14 +26,14 @@ internal sealed class StampedeProtector : IDisposable
 
     public async Task<T> ExecuteAsync<T>(
         string key,
-        Func<CancellationToken, Task<T>> getOrSetFromCache,
+        Func<CancellationToken, Task<CacheResult<T>>> getOrSetFromCache,
         Func<CancellationToken, Task<T>> factory,
         CancellationToken cancellationToken)
     {
         // First try cache without lock
         var result = await getOrSetFromCache(cancellationToken).ConfigureAwait(false);
-        if (result is not null)
-            return result;
+        if (result.HasValue)
+            return result.Value!;
 
         var keyLock = _locks.GetOrAdd(key, _ => new Lazy<SemaphoreSlim>(() => new SemaphoreSlim(1, 1)));
 
@@ -46,10 +46,11 @@ internal sealed class StampedeProtector : IDisposable
         {
             // Double-check after acquiring lock
             result = await getOrSetFromCache(cancellationToken).ConfigureAwait(false);
-            if (result is not null)
-                return result;
+            if (result.HasValue)
+                return result.Value!;
 
-            return await factory(cancellationToken).ConfigureAwait(false);
+            var value = await factory(cancellationToken).ConfigureAwait(false);
+            return value;
         }
         finally
         {
