@@ -6,4 +6,12 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Folder Include="Infrastructures\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HDistributedHybridCache.Abstraction\HDistributedHybridCache.Abstraction.csproj" />
+  </ItemGroup>
+
 </Project>
