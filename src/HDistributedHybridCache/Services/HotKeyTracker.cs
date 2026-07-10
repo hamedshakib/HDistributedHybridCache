@@ -43,12 +43,12 @@ internal class HotKeyTracker
             }
         );
 
-        // بررسی داغ شدن
+        // Check if key became hot
         if (_stats.TryGetValue(key, out var stat) && stat.Count >= _threshold)
         {
             _hotKeys.TryAdd(key, 0);
 
-            // اگر تعداد کلیدهای داغ زیاد شد، Trim کن
+            // If too many hot keys, trim them
             if (_hotKeys.Count > _maxHotKeys)
             {
                 TrimHotKeys();
@@ -81,7 +81,7 @@ internal class HotKeyTracker
             if (_hotKeys.Count <= _maxHotKeys)
                 return;
 
-            // فقط کلیدهایی با بیشترین تعداد دسترسی را نگه دار
+            // Keep only keys with highest access count
             var topKeys = _stats
                 .OrderByDescending(kv => kv.Value.Count)
                 .Take(_maxHotKeys)

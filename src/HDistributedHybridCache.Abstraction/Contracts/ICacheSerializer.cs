@@ -1,8 +1,8 @@
 namespace HDistributedHybridCache.Abstraction.Contracts;
 
 /// <summary>
-/// انتزاع سریالایزر برای کش
-/// امکان جایگزینی Newtonsoft.Json با System.Text.Json، MessagePack و غیره
+/// Cache serializer abstraction
+/// Allows replacing Newtonsoft.Json with System.Text.Json, MessagePack, etc.
 /// </summary>
 public interface ICacheSerializer
 {

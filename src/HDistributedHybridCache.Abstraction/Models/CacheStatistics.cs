@@ -8,7 +8,7 @@ public class CacheStatistics
     private readonly CacheOptions _options;
     private readonly bool _isEnabled;
 
-    // شمارنده‌های تجمعی
+    // Cumulative counters
     private long _totalRequests;
     private long _memoryHits;
     private long _redisHits;
@@ -16,11 +16,11 @@ public class CacheStatistics
     private long _invalidations;
     private readonly DateTime _startTime = DateTime.UtcNow;
 
-    // پنجره‌های غلتان (اختیاری)
+    // Rolling windows (optional)
     private readonly RollingWindow? _requestsWindow;
     private readonly RollingWindow? _hitsWindow;
 
-    // کلیدهای داغ برای آمار
+    // Hot keys for statistics
     private readonly ConcurrentDictionary<string, long> _hotKeyStats = new();
     private readonly int _maxHotKeyStats = 100;
 
@@ -133,7 +133,7 @@ public class CacheStatistics
     }
 
     /// <summary>
-    /// بازنشانی تمام آمار (مثلاً هنگام قطعی Redis)
+    /// Reset all statistics (e.g., when Redis disconnects)
     /// </summary>
     public void Reset()
     {

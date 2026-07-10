@@ -3,26 +3,26 @@
 public enum CacheStoreType : byte
 {
     /// <summary>
-    /// هرگز در Memory Cache ذخیره نشود (فقط Redis)
-    /// مثال: توکن‌های موقتی، OTP، داده‌های یکبارمصرف
+    /// Never store in Memory Cache (Redis only)
+    /// Example: temporary tokens, OTP, one-time data
     /// </summary>
     NeverInMemory = 1,
 
     /// <summary>
-    /// فقط در صورت داغ شدن (HotKey) در Memory ذخیره شود
-    /// مثال: سشن کاربر، محصولات پربازدید
+    /// Only store in Memory if marked as HotKey
+    /// Example: user sessions, popular products
     /// </summary>
     HotKeyOnly = 2,
 
     /// <summary>
-    /// همیشه در Memory ذخیره شود (اولویت با حافظه‌ی موجود)
-    /// مثال: تنظیمات سیستمی، داده‌های مرجع
+    /// Always store in Memory (priority given to available memory)
+    /// Example: system settings, reference data
     /// </summary>
     PreferInMemory = 3,
 
     /// <summary>
-    /// حتماً در Memory ذخیره شود (حتی اگر کش پر باشد، دیگران را حذف کن)
-    /// مثال: داده‌های حیاتی، تنظیمات امنیتی
+    /// Must be stored in Memory (evict others if cache is full)
+    /// Example: critical data, security settings
     /// </summary>
     MustInMemory = 4
 }

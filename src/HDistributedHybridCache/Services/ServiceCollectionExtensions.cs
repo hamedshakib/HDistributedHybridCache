@@ -52,7 +52,7 @@ public static class ServiceCollectionExtensions
                 }
             });
 
-            // ثبت پیش‌فرض‌های Serializer و Compressor (فقط اگر قبلاً ثبت نشده باشند)
+            // Register default Serializer and Compressor (only if not already registered)
             services.TryAddSingleton<ICacheSerializer, NewtonsoftCacheSerializer>();
             if (options.EnableCompression)
             {
@@ -65,7 +65,7 @@ public static class ServiceCollectionExtensions
         }
 
         /// <summary>
-        /// ثبت با Serializer سفارشی
+        /// Register with custom serializer
         /// </summary>
         public IServiceCollection AddHDistributedHybridCache<T>(
             Action<CacheOptions>? configureOptions = null)
@@ -77,7 +77,7 @@ public static class ServiceCollectionExtensions
         }
 
         /// <summary>
-        /// ثبت با Serializer و Compressor سفارشی
+        /// Register with custom serializer and compressor
         /// </summary>
         public IServiceCollection AddHDistributedHybridCache<TSerializer, TCompressor>(
             Action<CacheOptions>? configureOptions = null)
@@ -90,7 +90,7 @@ public static class ServiceCollectionExtensions
             return services;
         }
 
-        // متد کمکی برای غیرفعال‌سازی آمار
+        // Helper method to disable statistics
         public IServiceCollection AddHDistributedHybridCacheWithoutStats(
             Action<CacheOptions>? configureOptions = null)
         {

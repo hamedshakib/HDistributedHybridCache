@@ -19,7 +19,7 @@ public class CacheKey
         PreferredMemoryTtl = storeType == CacheStoreType.NeverInMemory ? null : preferredMemoryTtl;
     }
 
-    // متدهای کمکی برای ساخت راحت‌تر
+    // Helper methods for easier construction
     public static CacheKey NeverInMemory(string key, TimeSpan? redisTtl = null)
         => new(key, CacheStoreType.NeverInMemory, redisTtl, null);
 

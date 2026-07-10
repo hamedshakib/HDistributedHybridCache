@@ -5,7 +5,7 @@ using System.Text;
 namespace HDistributedHybridCache.Services;
 
 /// <summary>
-/// پیاده‌سازی پیش‌فرض ICacheSerializer با Newtonsoft.Json
+/// Default ICacheSerializer implementation using Newtonsoft.Json
 /// </summary>
 public class NewtonsoftCacheSerializer : ICacheSerializer
 {
@@ -16,7 +16,7 @@ public class NewtonsoftCacheSerializer : ICacheSerializer
         _settings = new JsonSerializerSettings
         {
             ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
-            Formatting = Formatting.None // بدون indentation برای کاهش حجم
+            Formatting = Formatting.None // No indentation to reduce size
         };
     }
 

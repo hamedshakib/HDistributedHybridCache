@@ -4,7 +4,7 @@ using System.IO.Compression;
 namespace HDistributedHybridCache.Services;
 
 /// <summary>
-/// پیاده‌سازی فشرده‌سازی با GZip
+/// GZip compression implementation
 /// </summary>
 public class GZipCacheCompressor : ICacheCompressor
 {

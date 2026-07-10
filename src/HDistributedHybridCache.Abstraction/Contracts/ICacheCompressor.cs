@@ -1,7 +1,7 @@
 namespace HDistributedHybridCache.Abstraction.Contracts;
 
 /// <summary>
-/// انتزاع فشرده‌سازی داده‌ها برای کاهش حجم در Redis
+/// Data compression abstraction to reduce size in Redis
 /// </summary>
 public interface ICacheCompressor
 {

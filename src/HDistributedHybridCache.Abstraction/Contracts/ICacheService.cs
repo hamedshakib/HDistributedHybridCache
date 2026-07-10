@@ -4,10 +4,10 @@ namespace HDistributedHybridCache.Abstraction.Contracts;
 
 public interface ICacheService
 {
-    // ============ با string (فقط Redis خوانده می‌شود، بدون L1 Memory) ============
+    // ============ With string (Redis only, no L1 Memory caching) ============
     Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default);
 
-    // ============ با CacheKey (کامل با استراتژی ذخیره‌سازی) ============
+    // ============ With CacheKey (full storage strategy) ============
     Task SetAsync<T>(CacheKey cacheKey, T value, CancellationToken cancellationToken = default);
     Task RemoveAsync(CacheKey cacheKey, CancellationToken cancellationToken = default);
     Task<T> GetOrSetAsync<T>(
@@ -16,7 +16,7 @@ public interface ICacheService
         CancellationToken cancellationToken = default
     );
 
-    // ============ مدیریت ============
+    // ============ Management ============
     void ClearMemoryCache();
     CacheStatistics GetStatistics();
 }

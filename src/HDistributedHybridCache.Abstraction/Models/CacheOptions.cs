@@ -7,156 +7,156 @@ public record CacheOptions
     // ============ Memory Cache Settings ============
 
     /// <summary>
-    /// حداکثر ظرفیت (تعداد آیتم‌های) Memory Cache.
+    /// Maximum capacity (number of items) for Memory Cache.
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>1024</c></remarks>
+    /// <remarks>Default value: <c>1024</c></remarks>
     [DefaultValue(1024L)]
     public long MemoryCacheMaxSize { get; set; } = 1024;
 
     /// <summary>
-    /// مدت زمان انقضای پیش‌فرض برای آیتم‌های کش در حافظه.
+    /// Default expiration time for cache items in memory.
     /// </summary>
     /// <remarks>
-    /// مقدار پیش‌فرض: <c>5 دقیقه</c>.
-    /// در فایل appsettings.json به صورت string وارد شود: <c>"00:05:00"</c>
+    /// Default value: <c>5 minutes</c>.
+    /// In appsettings.json, enter as string: <c>"00:05:00"</c>
     /// </remarks>
     [DefaultValue("00:05:00")]
     public TimeSpan DefaultMemoryTtl { get; set; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
-    /// درصد فشرده‌سازی (Compaction) زمانی که کش پر می‌شود.
+    /// Compaction percentage when cache is full.
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>0.2</c> (به معنی 20%)</remarks>
+    /// <remarks>Default value: <c>0.2</c> (meaning 20%)</remarks>
     [DefaultValue(0.2)]
     public double MemoryCacheCompactionPercentage { get; set; } = 0.2;
 
     // ============ Redis Settings ============
 
     /// <summary>
-    /// آدرس اتصال به سرور Redis.
+    /// Redis server connection address.
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>localhost:6379</c></remarks>
+    /// <remarks>Default value: <c>localhost:6379</c></remarks>
     [DefaultValue("localhost:6379")]
     public string RedisConnectionString { get; set; } = "localhost:6379";
 
     /// <summary>
-    /// مدت زمان انقضای پیش‌فرض برای آیتم‌های کش در Redis.
+    /// Default expiration time for cache items in Redis.
     /// </summary>
     /// <remarks>
-    /// مقدار پیش‌فرض: <c>20 دقیقه</c>.
-    /// در فایل appsettings.json به صورت string وارد شود: <c>"00:20:00"</c>
+    /// Default value: <c>20 minutes</c>.
+    /// In appsettings.json, enter as string: <c>"00:20:00"</c>
     /// </remarks>
     [DefaultValue("00:20:00")]
     public TimeSpan DefaultRedisTtl { get; set; } = TimeSpan.FromMinutes(20);
 
     /// <summary>
-    /// شماره دیتابیس Redis برای استفاده.
+    /// Redis database number to use.
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>0</c></remarks>
+    /// <remarks>Default value: <c>0</c></remarks>
     [DefaultValue(0)]
     public int RedisDatabase { get; set; } = 0;
 
     /// <summary>
-    /// پیشوند برای تمام کلیدهای ذخیره شده در Redis.
+    /// Prefix for all keys stored in Redis.
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>""</c> (بدون پیشوند)</remarks>
+    /// <remarks>Default value: <c>""</c> (no prefix)</remarks>
     [DefaultValue("")]
     public string KeyPrefix { get; set; } = "";
 
     // ============ Retry Settings ============
 
     /// <summary>
-    /// تعداد دفعات تلاش مجدد در صورت شکست اتصال به Redis.
+    /// Number of retry attempts on Redis connection failure.
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>3</c></remarks>
+    /// <remarks>Default value: <c>3</c></remarks>
     [DefaultValue(3)]
     public int RedisRetryCount { get; set; } = 3;
 
     /// <summary>
-    /// تاخیر پایه (به میلی‌ثانیه) بین هر بار تلاش مجدد.
+    /// Base delay (in milliseconds) between retry attempts.
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>100</c> میلی‌ثانیه</remarks>
+    /// <remarks>Default value: <c>100</c> milliseconds</remarks>
     [DefaultValue(100)]
     public int RedisRetryBaseDelayMs { get; set; } = 100;
 
     /// <summary>
-    /// مهلت اتصال به Redis (به میلی‌ثانیه).
+    /// Connection timeout to Redis (in milliseconds).
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>5000</c> میلی‌ثانیه</remarks>
+    /// <remarks>Default value: <c>5000</c> milliseconds</remarks>
     [DefaultValue(5000)]
     public int RedisConnectTimeoutMs { get; set; } = 5000;
 
     // ============ Pub/Sub Settings ============
 
     /// <summary>
-    /// پیشوند نام کانال برای پیام‌های Pub/Sub جهت بی‌اعتبارسازی کش.
+    /// Channel name prefix for Pub/Sub invalidation messages.
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>cache:invalidate</c></remarks>
+    /// <remarks>Default value: <c>cache:invalidate</c></remarks>
     [DefaultValue("cache:invalidate")]
     public string PubSubChannelPrefix { get; set; } = "cache:invalidate";
 
     /// <summary>
-    /// آیا قابلیت Pub/Sub برای همگام‌سازی کش بین چندین نمونه (Instance) فعال باشد؟
+    /// Should Pub/Sub be enabled for cache synchronization across multiple instances?
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>true</c></remarks>
+    /// <remarks>Default value: <c>true</c></remarks>
     [DefaultValue(true)]
     public bool EnablePubSub { get; set; } = true;
 
     // ============ HotKey Settings ============
 
     /// <summary>
-    /// تعداد درخواست‌هایی که یک کلید باید در بازه زمانی مشخص داشته باشد تا به عنوان HotKey شناسایی شود.
+    /// Number of requests a key must have within a time window to be identified as HotKey.
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>10</c></remarks>
+    /// <remarks>Default value: <c>10</c></remarks>
     [DefaultValue(10)]
     public int HotKeyThreshold { get; set; } = 10;
 
     /// <summary>
-    /// بازه زمانی برای بررسی و شناسایی HotKey ها.
+    /// Time window for HotKey identification.
     /// </summary>
     /// <remarks>
-    /// مقدار پیش‌فرض: <c>5 دقیقه</c>.
-    /// در فایل appsettings.json به صورت string وارد شود: <c>"00:05:00"</c>
+    /// Default value: <c>5 minutes</c>.
+    /// In appsettings.json, enter as string: <c>"00:05:00"</c>
     /// </remarks>
     [DefaultValue("00:05:00")]
     public TimeSpan HotKeyDecayWindow { get; set; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
-    /// حداکثر تعداد HotKey هایی که همزمان می‌توانند ردیابی شوند.
+    /// Maximum number of HotKeys that can be tracked simultaneously.
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>1000</c></remarks>
+    /// <remarks>Default value: <c>1000</c></remarks>
     [DefaultValue(1000)]
     public int MaxHotKeys { get; set; } = 1000;
 
     /// <summary>
-    /// آیا قابلیت ردیابی HotKey ها فعال باشد؟
+    /// Should HotKey tracking be enabled?
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>true</c></remarks>
+    /// <remarks>Default value: <c>true</c></remarks>
     [DefaultValue(true)]
     public bool EnableHotKeyTracking { get; set; } = true;
 
     // ============ Statistics Settings ============
 
     /// <summary>
-    /// آیا آمار و عملکرد کش (مثل Hit/Miss) ثبت شود؟
+    /// Should cache statistics (like Hit/Miss) be recorded?
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>true</c></remarks>
+    /// <remarks>Default value: <c>true</c></remarks>
     [DefaultValue(true)]
     public bool EnableStatistics { get; set; } = true;
 
     /// <summary>
-    /// آیا آمار به صورت Rolling Window (پنجره لغزان) محاسبه شود؟
+    /// Should statistics be calculated as Rolling Window?
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>true</c></remarks>
+    /// <remarks>Default value: <c>true</c></remarks>
     [DefaultValue(true)]
     public bool EnableRollingWindow { get; set; } = true;
 
     /// <summary>
-    /// بازه زمانی برای پنجره لغزان آمار.
+    /// Time window for rolling statistics.
     /// </summary>
     /// <remarks>
-    /// مقدار پیش‌فرض: <c>1 دقیقه</c>.
-    /// در فایل appsettings.json به صورت string وارد شود: <c>"00:01:00"</c>
+    /// Default value: <c>1 minute</c>.
+    /// In appsettings.json, enter as string: <c>"00:01:00"</c>
     /// </remarks>
     [DefaultValue("00:01:00")]
     public TimeSpan StatisticsRollingWindow { get; set; } = TimeSpan.FromMinutes(1);
@@ -164,32 +164,32 @@ public record CacheOptions
     // ============ Performance Settings ============
 
     /// <summary>
-    /// آیا محافظت در برابر Cache Stampede (تقاضای همزمان برای یک کلید منقضی شده) فعال باشد؟
+    /// Should protection against Cache Stampede (concurrent requests for expired key) be enabled?
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>true</c></remarks>
+    /// <remarks>Default value: <c>true</c></remarks>
     [DefaultValue(true)]
     public bool EnableCacheStampedeProtection { get; set; } = true;
 
     /// <summary>
-    /// حداکثر زمان (به میلی‌ثانیه) برای نگهداری قفل جهت جلوگیری از Stampede.
+    /// Maximum time (in milliseconds) to hold the lock for stampede protection.
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>5000</c> میلی‌ثانیه</remarks>
+    /// <remarks>Default value: <c>5000</c> milliseconds</remarks>
     [DefaultValue(5000)]
     public int StampedeLockTimeoutMs { get; set; } = 5000;
 
     /// <summary>
-    /// آیا داده‌های کش قبل از ذخیره در Redis فشرده‌سازی (Compress) شوند؟
+    /// Should cache data be compressed before storing in Redis?
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>false</c></remarks>
+    /// <remarks>Default value: <c>false</c></remarks>
     [DefaultValue(false)]
     public bool EnableCompression { get; set; } = false;
 
     /// <summary>
-    /// بازه زمانی برای پاکسازی قفل‌های منقضی شده Stampede.
+    /// Time window for cleaning up expired stampede locks.
     /// </summary>
     /// <remarks>
-    /// مقدار پیش‌فرض: <c>10 دقیقه</c>.
-    /// در فایل appsettings.json به صورت string وارد شود: <c>"00:10:00"</c>
+    /// Default value: <c>10 minutes</c>.
+    /// In appsettings.json, enter as string: <c>"00:10:00"</c>
     /// </remarks>
     [DefaultValue("00:10:00")]
     public TimeSpan StampedeLockCleanupInterval { get; set; } = TimeSpan.FromMinutes(10);
@@ -197,18 +197,18 @@ public record CacheOptions
     // ============ Null Cache (Cache Poisoning Prevention) ============
 
     /// <summary>
-    /// آیا مقادیر Null نیز در کش ذخیره شوند (برای جلوگیری از Cache Poisoning و حملات به دیتابیس)؟
+    /// Should null values also be cached (to prevent Cache Poisoning and database attacks)?
     /// </summary>
-    /// <remarks>مقدار پیش‌فرض: <c>true</c></remarks>
+    /// <remarks>Default value: <c>true</c></remarks>
     [DefaultValue(true)]
     public bool EnableNullCaching { get; set; } = true;
 
     /// <summary>
-    /// مدت زمان اعتبار برای مقادیر Null کش شده.
+    /// Validity period for cached null values.
     /// </summary>
     /// <remarks>
-    /// مقدار پیش‌فرض: <c>30 ثانیه</c>.
-    /// در فایل appsettings.json به صورت string وارد شود: <c>"00:00:30"</c>
+    /// Default value: <c>30 seconds</c>.
+    /// In appsettings.json, enter as string: <c>"00:00:30"</c>
     /// </remarks>
     [DefaultValue("00:00:30")]
     public TimeSpan NullCacheTtl { get; set; } = TimeSpan.FromSeconds(30);
