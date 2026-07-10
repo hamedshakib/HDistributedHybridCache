@@ -175,7 +175,8 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
                 cacheKey.Key,
                 ct => GetFromCacheAsync<T>(cacheKey, ct),
                 factory,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                (value, ct) => SetAsync(cacheKey, value, ct)).ConfigureAwait(false);
         }
 
         var value = await factory(cancellationToken).ConfigureAwait(false);

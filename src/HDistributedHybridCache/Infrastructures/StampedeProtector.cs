@@ -28,7 +28,8 @@ internal sealed class StampedeProtector : IDisposable
         string key,
         Func<CancellationToken, Task<CacheResult<T>>> getOrSetFromCache,
         Func<CancellationToken, Task<T>> factory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<T, CancellationToken, Task>? setInCache = null)
     {
         // First try cache without lock
         var result = await getOrSetFromCache(cancellationToken).ConfigureAwait(false);
@@ -50,6 +51,14 @@ internal sealed class StampedeProtector : IDisposable
                 return result.Value!;
 
             var value = await factory(cancellationToken).ConfigureAwait(false);
+
+            // Store the value in cache before releasing the lock so waiting threads
+            // will find it on their double-check
+            if (setInCache is not null)
+            {
+                await setInCache(value, cancellationToken).ConfigureAwait(false);
+            }
+
             return value;
         }
         finally
