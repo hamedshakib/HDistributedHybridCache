@@ -12,6 +12,9 @@ public static class ServiceCollectionExtensions
 {
     extension(IServiceCollection services)
     {
+        /// <summary>
+        /// Registers the distributed hybrid cache service with default serializer and optional compression.
+        /// </summary>
         public IServiceCollection AddHDistributedHybridCache(
         Action<CacheOptions>? configureOptions = null)
         {
@@ -65,7 +68,7 @@ public static class ServiceCollectionExtensions
         }
 
         /// <summary>
-        /// Register with custom serializer
+        /// Registers the cache service with a custom serializer type.
         /// </summary>
         public IServiceCollection AddHDistributedHybridCache<T>(
             Action<CacheOptions>? configureOptions = null)
@@ -77,7 +80,7 @@ public static class ServiceCollectionExtensions
         }
 
         /// <summary>
-        /// Register with custom serializer and compressor
+        /// Registers the cache service with custom serializer and compressor types.
         /// </summary>
         public IServiceCollection AddHDistributedHybridCache<TSerializer, TCompressor>(
             Action<CacheOptions>? configureOptions = null)
@@ -90,7 +93,9 @@ public static class ServiceCollectionExtensions
             return services;
         }
 
-        // Helper method to disable statistics
+        /// <summary>
+        /// Registers the cache service with statistics and rolling window disabled.
+        /// </summary>
         public IServiceCollection AddHDistributedHybridCacheWithoutStats(
             Action<CacheOptions>? configureOptions = null)
         {

@@ -61,9 +61,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
             stampedeLocks);
     }
 
-    // ================================================================
-    // 1️⃣ Direct Redis Get (no L1 Memory caching)
-    // ================================================================
+    // --- Direct Redis Get (no L1 Memory caching) ---
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
@@ -98,9 +96,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         return default;
     }
 
-    // ================================================================
-    // 2️⃣ Set with CacheKey (full L1/L2 strategy)
-    // ================================================================
+    // --- Set with CacheKey (full L1/L2 strategy) ---
     public async Task SetAsync<T>(CacheKey cacheKey, T value, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(cacheKey);
@@ -147,9 +143,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         }
     }
 
-    // ================================================================
-    // 3️⃣ GetOrSet with CacheKey (with stampede protection)
-    // ================================================================
+    // --- GetOrSet with CacheKey (with stampede protection) ---
     public async Task<T> GetOrSetAsync<T>(
         CacheKey cacheKey,
         Func<CancellationToken, Task<T>> factory,
@@ -184,9 +178,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         return value;
     }
 
-    // ================================================================
-    // 4️⃣ Remove
-    // ================================================================
+    // --- Remove ---
     public async Task RemoveAsync(CacheKey cacheKey, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(cacheKey);
@@ -208,9 +200,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         }
     }
 
-    // ================================================================
-    // 5️⃣ Management
-    // ================================================================
+    // --- Management ---
     public void ClearMemoryCache()
     {
         if (_memoryCache is MemoryCache concreteCache)
@@ -227,9 +217,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
 
     public CacheStatistics GetStatistics() => _statistics;
 
-    // ================================================================
-    // Private Helpers
-    // ================================================================
+    // --- Private Helpers ---
 
     private bool ShouldStoreInMemory(CacheKey cacheKey)
     {
@@ -277,20 +265,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
             if (redisValue.HasValue)
             {
                 _statistics.RecordRedisHit(cacheKey.Key);
-
-                var data = (byte[])redisValue!;
-
-                // Null sentinel detection (must check before decompress)
-                if (_options.EnableNullCaching && data.Length == 1 && data[0] == 0)
-                {
-                    _logger.LogDebug("Null cache HIT for key: {Key}", cacheKey.Key);
-                    return CacheResult<T>.Hit(default);
-                }
-
-                if (_compressor is not null)
-                    data = _compressor.Decompress(data);
-
-                var value = _serializer.Deserialize<T>(data);
+                var value = DeserializeData<T>((byte[])redisValue!, cacheKey.Key);
 
                 // Store non-null values in memory cache if applicable
                 if (value is not null && ShouldStoreInMemory(cacheKey))
@@ -335,13 +310,9 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         var redisTtl = cacheKey.PreferredRedisTtl ?? _options.DefaultRedisTtl;
         var memoryTtl = cacheKey.PreferredMemoryTtl;
 
-        TimeSpan ttl;
-        if (!memoryTtl.HasValue)
-            ttl = redisTtl;
-        else if (memoryTtl.Value > redisTtl)
-            ttl = redisTtl;
-        else
-            ttl = memoryTtl.Value;
+        var ttl = memoryTtl.HasValue
+            ? (memoryTtl.Value > redisTtl ? redisTtl : memoryTtl.Value)
+            : redisTtl;
 
         var priority = GetMemoryPriority(cacheKey.StoreType);
 
@@ -358,8 +329,6 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
             entryOptions.SetSlidingExpiration(TimeSpan.FromMinutes(1));
         }
 
-        // Closures capture only primitives/strings to avoid memory leaks
-        var capturedKey = key;
         var storeType = cacheKey.StoreType;
 
         entryOptions.RegisterPostEvictionCallback((evictedKey, _, reason, _) =>
@@ -372,25 +341,21 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
 
             if (storeType == CacheStoreType.MustInMemory && reason == EvictionReason.Capacity)
             {
-                _logger.LogWarning("🚨 MUST_IN_MEMORY key evicted: {Key}", capturedKey);
+                _logger.LogWarning("🚨 MUST_IN_MEMORY key evicted: {Key}", key);
             }
         });
 
         _memoryCache.Set(key, value, entryOptions);
     }
 
-    private static CacheItemPriority GetMemoryPriority(CacheStoreType importance) => importance switch
+    private static CacheItemPriority GetMemoryPriority(CacheStoreType storeType) => storeType switch
     {
-        CacheStoreType.NeverInMemory => CacheItemPriority.Normal,
-        CacheStoreType.HotKeyOnly => CacheItemPriority.Normal,
         CacheStoreType.PreferInMemory => CacheItemPriority.High,
         CacheStoreType.MustInMemory => CacheItemPriority.NeverRemove,
         _ => CacheItemPriority.Normal
     };
 
-    // ================================================================
-    // Retry Policy with Exponential Backoff
-    // ================================================================
+    // --- Retry Policy with Exponential Backoff ---
     private async Task<T> ExecuteWithRetryAsync<T>(Func<Task<T>> operation, CancellationToken cancellationToken)
     {
         var retryCount = _options.RedisRetryCount;
@@ -418,13 +383,10 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
             }
         }
 
-        // All retries exhausted - throw the last exception
         throw new RedisException($"Redis operation failed after {retryCount + 1} attempts", lastException);
     }
 
-    // ================================================================
-    // Dispose
-    // ================================================================
+    // --- Dispose ---
     public void Dispose()
     {
         _stampedeProtector.Dispose();

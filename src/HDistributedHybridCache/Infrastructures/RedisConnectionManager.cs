@@ -62,7 +62,6 @@ internal sealed class RedisConnectionManager : IDisposable
     {
         if (!_redisConnected)
         {
-            _logger.LogWarning("Redis is disconnected. Skipping Redis operations.");
             throw new RedisConnectionException(ConnectionFailureType.UnableToConnect,
                 "Cannot write to cache: Redis is disconnected.");
         }
@@ -140,7 +139,6 @@ internal sealed class RedisConnectionManager : IDisposable
                 _statistics.RecordInvalidation();
 
                 _logger.LogDebug("🔄 Memory invalidated via Pub/Sub: {Key}", key);
-                await Task.CompletedTask;
             }
             catch (Exception ex)
             {

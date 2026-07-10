@@ -5,8 +5,8 @@ namespace HDistributedHybridCache.Infrastructures;
 /// </summary>
 internal readonly struct CacheResult<T>
 {
-    public readonly T? Value;
-    public readonly bool HasValue; // true = cache hit (even if Value is null)
+    public T? Value { get; }
+    public bool HasValue { get; } // true = cache hit (even if Value is null)
 
     private CacheResult(T? value, bool hasValue)
     {

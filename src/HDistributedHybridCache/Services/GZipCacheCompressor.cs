@@ -10,22 +10,22 @@ public class GZipCacheCompressor : ICacheCompressor
 {
     public byte[] Compress(byte[] data)
     {
-        if (data == null || data.Length == 0)
-            return data ?? Array.Empty<byte>();
+        if (data is null || data.Length == 0)
+            return data ?? [];
 
         using var output = new MemoryStream();
         using (var gzip = new GZipStream(output, CompressionLevel.Fastest, leaveOpen: true))
         {
             gzip.Write(data, 0, data.Length);
-            gzip.Flush(); // Ensure all data is written to the underlying stream
+            gzip.Flush();
         }
         return output.ToArray();
     }
 
     public byte[] Decompress(byte[] compressedData)
     {
-        if (compressedData == null || compressedData.Length == 0)
-            return compressedData ?? Array.Empty<byte>();
+        if (compressedData is null || compressedData.Length == 0)
+            return compressedData ?? [];
 
         using var input = new MemoryStream(compressedData);
         using var gzip = new GZipStream(input, CompressionMode.Decompress);

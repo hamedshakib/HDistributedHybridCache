@@ -70,14 +70,14 @@ internal class HotKeyTracker
 
     private void TrimHotKeysIfNeeded()
     {
-        // Quick check before acquiring lock
-        if (_hotKeys.Count <= _maxHotKeys || DateTime.UtcNow - _lastTrim < TimeSpan.FromSeconds(30))
+        var thirtySecondsAgo = TimeSpan.FromSeconds(30);
+
+        if (_hotKeys.Count <= _maxHotKeys || DateTime.UtcNow - _lastTrim < thirtySecondsAgo)
             return;
 
         lock (_trimLock)
         {
-            // Double-check inside lock to prevent redundant trimming
-            if (DateTime.UtcNow - _lastTrim < TimeSpan.FromSeconds(30))
+            if (DateTime.UtcNow - _lastTrim < thirtySecondsAgo)
                 return;
 
             if (_hotKeys.Count <= _maxHotKeys)
@@ -89,7 +89,6 @@ internal class HotKeyTracker
 
     private void TrimHotKeys()
     {
-        // Keep only keys with highest access count
         var topKeys = _stats
             .OrderByDescending(kv => kv.Value.Count)
             .Take(_maxHotKeys)
@@ -112,17 +111,12 @@ internal class HotKeyTracker
         if (!_isEnabled) return;
 
         var cutoff = DateTime.UtcNow.Subtract(TimeSpan.FromHours(1));
-        var keysToRemove = new List<string>();
+        var staleKeys = _stats
+            .Where(kvp => kvp.Value.LastAccess < cutoff)
+            .Select(kvp => kvp.Key)
+            .ToList();
 
-        foreach (var key in _stats.Keys)
-        {
-            if (_stats.TryGetValue(key, out var stat) && stat.LastAccess < cutoff)
-            {
-                keysToRemove.Add(key);
-            }
-        }
-
-        foreach (var key in keysToRemove)
+        foreach (var key in staleKeys)
         {
             _stats.TryRemove(key, out _);
             _hotKeys.TryRemove(key, out _);

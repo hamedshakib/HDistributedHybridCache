@@ -75,23 +75,19 @@ internal sealed class StampedeProtector : IDisposable
     {
         try
         {
-            var keysToRemove = new List<string>();
-            foreach (var kvp in _locks)
-            {
-                if (!kvp.Value.IsValueCreated)
-                {
-                    keysToRemove.Add(kvp.Key);
-                }
-            }
+            var staleKeys = _locks
+                .Where(kvp => !kvp.Value.IsValueCreated)
+                .Select(kvp => kvp.Key)
+                .ToList();
 
-            foreach (var key in keysToRemove)
+            foreach (var key in staleKeys)
             {
                 _locks.TryRemove(key, out _);
             }
 
-            if (keysToRemove.Count > 0)
+            if (staleKeys.Count > 0)
             {
-                _logger.LogDebug("Cleaned up {Count} unused stampede locks.", keysToRemove.Count);
+                _logger.LogDebug("Cleaned up {Count} unused stampede locks.", staleKeys.Count);
             }
         }
         catch (Exception ex)
