@@ -273,8 +273,8 @@ internal sealed class RedisConnectionManager : IDisposable
 
             var result = await _redisDb.ScriptEvaluateAsync(
                 script,
-                new RedisKey[] { pattern },
-                new RedisValue[] { cursor, batchSize }
+                [pattern],
+                [cursor, batchSize]
             ).WaitAsync(cancellationToken);
 
             // Parse result
