@@ -110,10 +110,9 @@ internal sealed class RedisConnectionManager : IDisposable
     // Pub/Sub Invalidation
     // ================================================================
 
-    private string GetInvalidationChannel() =>
-        string.IsNullOrEmpty(_options.KeyPrefix)
-            ? _options.PubSubChannelPrefix
-            : $"{_options.PubSubChannelPrefix}:{_options.KeyPrefix}";
+    private string GetInvalidationChannel() => $"{_options.PubSubChannelPrefix}:invalidate:key";
+
+    private string GetPatternInvalidationChannel() => $"{_options.PubSubChannelPrefix}:invalidate:pattern";
 
     private void SubscribeToInvalidationEvents()
     {
@@ -122,9 +121,13 @@ internal sealed class RedisConnectionManager : IDisposable
         if (_subscribed)
         {
             var oldChannel = new RedisChannel(GetInvalidationChannel(), RedisChannel.PatternMode.Literal);
-            _redisSubscriber.UnsubscribeAsync(oldChannel);
+            _redisSubscriber.UnsubscribeAsync(oldChannel).Wait();
+
+            var oldPatternChannel = new RedisChannel(GetPatternInvalidationChannel(), RedisChannel.PatternMode.Literal);
+            _redisSubscriber.UnsubscribeAsync(oldPatternChannel).Wait();
         }
 
+        // کانال برای کلید تکی
         var channel = new RedisChannel(GetInvalidationChannel(), RedisChannel.PatternMode.Literal);
         _redisSubscriber.SubscribeAsync(channel, async (redisChannel, message) =>
         {
@@ -146,7 +149,75 @@ internal sealed class RedisConnectionManager : IDisposable
             }
         });
 
+        // کانال برای pattern
+        var patternChannel = new RedisChannel(GetPatternInvalidationChannel(), RedisChannel.PatternMode.Literal);
+        _redisSubscriber.SubscribeAsync(patternChannel, async (redisChannel, message) =>
+        {
+            try
+            {
+                var pattern = message.ToString();
+                if (string.IsNullOrEmpty(pattern)) return;
+
+                // فقط Memory keys حذف می‌شوند (HotKeys و آمار نگه داشته می‌شوند)
+                ClearMemoryByPattern(pattern);
+
+                // فقط Stampede locks حذف می‌شوند
+                RemoveStampedeLocksByPattern(pattern);
+
+                _logger.LogDebug("🔄 Cleared memory keys matching pattern (HotKeys preserved): {Pattern}", pattern);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Pub/Sub pattern error");
+            }
+        });
+
         _subscribed = true;
+    }
+
+    // --- Clear Memory keys by pattern (without affecting HotKeys or Statistics) ---
+    private void ClearMemoryByPattern(string pattern)
+    {
+        if (string.IsNullOrEmpty(pattern)) return;
+
+        if (_memoryCache is MemoryCache concreteCache)
+        {
+            var regexPattern = PatternToRegex(pattern);
+            var keysToRemove = concreteCache.Keys
+                .Cast<string>()
+                .Where(k => System.Text.RegularExpressions.Regex.IsMatch(k, regexPattern))
+                .ToList();
+
+            foreach (var key in keysToRemove)
+            {
+                concreteCache.Remove(key);
+            }
+
+            _logger.LogDebug("🔄 Cleared {Count} memory keys matching pattern '{Pattern}'", keysToRemove.Count, pattern);
+        }
+    }
+
+    private void RemoveStampedeLocksByPattern(string pattern)
+    {
+        if (string.IsNullOrEmpty(pattern)) return;
+
+        var regexPattern = PatternToRegex(pattern);
+        var keysToRemove = _stampedeLocks.Keys
+            .Where(k => System.Text.RegularExpressions.Regex.IsMatch(k, regexPattern))
+            .ToList();
+
+        foreach (var key in keysToRemove)
+        {
+            _stampedeLocks.TryRemove(key, out _);
+        }
+    }
+
+    private static string PatternToRegex(string pattern)
+    {
+        var regexPattern = System.Text.RegularExpressions.Regex.Escape(pattern)
+            .Replace("\\*", ".*")
+            .Replace("\\?", ".");
+        return "^" + regexPattern + "$";
     }
 
     public async Task PublishInvalidationAsync(string key)
@@ -161,6 +232,87 @@ internal sealed class RedisConnectionManager : IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to publish invalidation: {Key}", key);
+        }
+    }
+
+    // ================================================================
+    // Pattern-based Deletion
+    // ================================================================
+
+    /// <summary>
+    /// Removes all keys matching the specified pattern from Redis using SCAN.
+    /// Returns the number of keys deleted.
+    /// </summary>
+    public async Task<long> RemoveByPatternAsync(string pattern, CancellationToken cancellationToken = default)
+    {
+        if (!_redisConnected) return 0;
+
+        long deletedCount = 0;
+        var cursor = 0L;
+
+        // SCAN with COUNT 1000 for batch processing
+        const int batchSize = 1000;
+
+        do
+        {
+            // Use Lua script to scan and delete in one operation
+            var script = @"
+                local cursor = tonumber(ARGV[1])
+                local count = tonumber(ARGV[2])
+                local result = redis.call('SCAN', cursor, 'MATCH', KEYS[1], 'COUNT', count)
+
+                local newCursor = tonumber(result[1])
+                local keys = result[2]
+
+                if #keys > 0 then
+                    redis.call('DEL', unpack(keys))
+                end
+
+                return {tostring(newCursor), #keys}
+            ";
+
+            var result = await _redisDb.ScriptEvaluateAsync(
+                script,
+                new RedisKey[] { pattern },
+                new RedisValue[] { cursor, batchSize }
+            ).WaitAsync(cancellationToken);
+
+            // Parse result
+            var resultString = result.ToString();
+            var parts = resultString.Split(' ');
+            
+            if (parts.Length >= 2)
+            {
+                cursor = long.Parse(parts[0]);
+                deletedCount += int.Parse(parts[1]);
+            }
+            else
+            {
+                cursor = 0;
+            }
+
+        } while (cursor != 0);
+
+        return deletedCount;
+    }
+
+    /// <summary>
+    /// Publishes pattern invalidation to other nodes via Pub/Sub.
+    /// Other nodes will remove keys matching this pattern from their memory cache.
+    /// </summary>
+    public async Task PublishPatternInvalidationAsync(string pattern, CancellationToken cancellationToken = default)
+    {
+        if (_redisSubscriber == null || !_redisConnected) return;
+
+        try
+        {
+            var channel = new RedisChannel(GetPatternInvalidationChannel(), RedisChannel.PatternMode.Literal);
+            // Publish pattern to other nodes so they can clean their memory cache
+            await _redisSubscriber.PublishAsync(channel, pattern).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to publish pattern invalidation: {Pattern}", pattern);
         }
     }
 

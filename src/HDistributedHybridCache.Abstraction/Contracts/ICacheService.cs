@@ -15,6 +15,7 @@ public interface ICacheService
         Func<CancellationToken, Task<T>> factory,
         CancellationToken cancellationToken = default
     );
+    Task RemoveByPatternAsync(string pattern, CancellationToken cancellationToken = default);
 
     // ============ Management ============
     void ClearMemoryCache();

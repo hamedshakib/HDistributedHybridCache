@@ -215,6 +215,64 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         _hotKeyTracker.Cleanup();
     }
 
+    // --- Pattern-based Deletion ---
+    public async Task RemoveByPatternAsync(string pattern, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(pattern);
+
+        var redisKeyPattern = _redis.GetFullKey(pattern);
+
+        long deletedCount = 0;
+        if (_redis.IsRedisConnected())
+        {
+            // پیدا کردن و حذف کلیدهای Redis با pattern
+            deletedCount = await _redis.RemoveByPatternAsync(redisKeyPattern, cancellationToken);
+
+            // ارسال پیام Pub/Sub برای نودهای دیگر
+            // بدون KeyPrefix چون سایر نودها ممکن است KeyPrefix متفاوت داشته باشند
+            await _redis.PublishPatternInvalidationAsync(pattern, cancellationToken);
+        }
+
+        // پاک کردن فقط کلیدهای Memory (HotKeys و آمار نگه داشته می‌شوند)
+        ClearMemoryKeysByPattern(pattern);
+
+        _logger.LogInformation("Removed {Count} keys matching pattern '{Pattern}'", deletedCount, pattern);
+    }
+
+    // --- Clear Memory keys by pattern (without affecting HotKeys or Statistics) ---
+    private void ClearMemoryKeysByPattern(string pattern)
+    {
+        if (string.IsNullOrEmpty(pattern)) return;
+
+        // اگر MemoryCache به صورت MemoryCache concrete است، از Keys پشتیبانی می‌کند
+        if (_memoryCache is MemoryCache concreteCache)
+        {
+            var regexPattern = PatternToRegex(pattern);
+            var keysToRemove = concreteCache.Keys
+                .Cast<string>()
+                .Where(k => System.Text.RegularExpressions.Regex.IsMatch(k, regexPattern))
+                .ToList();
+
+            foreach (var key in keysToRemove)
+            {
+                concreteCache.Remove(key);
+            }
+
+            _logger.LogDebug("Cleared {Count} memory keys matching pattern '{Pattern}'", keysToRemove.Count, pattern);
+        }
+    }
+
+    private static string PatternToRegex(string pattern)
+    {
+        // Convert Redis wildcard to regex
+        // * -> .*
+        // ? -> .
+        var regexPattern = System.Text.RegularExpressions.Regex.Escape(pattern)
+            .Replace("\\*", ".*")
+            .Replace("\\?", ".");
+        return "^" + regexPattern + "$";
+    }
+
     public CacheStatistics GetStatistics() => _statistics;
 
     // --- Private Helpers ---
