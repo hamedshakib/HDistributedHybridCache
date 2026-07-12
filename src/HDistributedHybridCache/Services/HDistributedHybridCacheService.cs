@@ -225,15 +225,12 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         long deletedCount = 0;
         if (_redis.IsRedisConnected())
         {
-            // پیدا کردن و حذف کلیدهای Redis با pattern
             deletedCount = await _redis.RemoveByPatternAsync(redisKeyPattern,true, cancellationToken);
 
-            // ارسال پیام Pub/Sub برای نودهای دیگر
-            // بدون KeyPrefix چون سایر نودها ممکن است KeyPrefix متفاوت داشته باشند
             await _redis.PublishPatternInvalidationAsync(pattern, cancellationToken);
         }
 
-        // پاک کردن فقط کلیدهای Memory (HotKeys و آمار نگه داشته می‌شوند)
+        
         ClearMemoryKeysByPattern(pattern);
 
         _logger.LogInformation("Removed {Count} keys matching pattern '{Pattern}'", deletedCount, pattern);
@@ -244,7 +241,6 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
     {
         if (string.IsNullOrEmpty(pattern)) return;
 
-        // اگر MemoryCache به صورت MemoryCache concrete است، از Keys پشتیبانی می‌کند
         if (_memoryCache is MemoryCache concreteCache)
         {
             var regexPattern = PatternToRegex(pattern);

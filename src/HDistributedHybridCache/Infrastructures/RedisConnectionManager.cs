@@ -23,6 +23,10 @@ internal sealed class RedisConnectionManager : IDisposable
     private readonly CacheStatistics _statistics;
     private readonly ConcurrentDictionary<string, Lazy<SemaphoreSlim>> _stampedeLocks;
 
+    private readonly string _instanceId = Guid.NewGuid().ToString("N");
+    public string InstanceId => _instanceId;
+    private const int InstanceIdLength = 32;
+
     // Cache of compiled regexes per pattern to avoid re-building/re-compiling
     // a Regex object on every single invalidation message.
     private readonly ConcurrentDictionary<string, Regex> _patternRegexCache = new();
@@ -131,11 +135,6 @@ internal sealed class RedisConnectionManager : IDisposable
     {
         if (_redisSubscriber == null) return;
 
-        // Always start from a clean slate. StackExchange.Redis auto re-registers
-        // its own subscriptions internally after a reconnect, so relying on our
-        // "_subscribed" flag alone can leave duplicate handlers registered.
-        // UnsubscribeAll() guarantees there is exactly one handler per channel
-        // after this call, regardless of what the multiplexer did internally.
         await _redisSubscriber.UnsubscribeAllAsync().ConfigureAwait(false);
 
         // کانال برای کلید تکی
@@ -144,7 +143,21 @@ internal sealed class RedisConnectionManager : IDisposable
         {
             try
             {
-                var key = message.ToString();
+                var raw = message.ToString();
+                if (string.IsNullOrEmpty(raw) || raw.Length <= InstanceIdLength) return;
+
+                var senderInstanceId = raw[..InstanceIdLength];
+                var key = raw[InstanceIdLength..];
+
+                if (senderInstanceId == _instanceId)
+                {
+                    // این پیام از خود همین instance است. چون مقدار جدید همین الان
+                    // در SetAsync، قبل از Publish، در مموری لوکال ست شده،
+                    // نیازی به حذف/invalidate نیست.
+                    _logger.LogDebug("🔁 Self-originated update skipped: {Key}", key);
+                    return;
+                }
+
                 if (string.IsNullOrEmpty(key)) return;
 
                 _memoryCache.Remove(key);
@@ -166,13 +179,21 @@ internal sealed class RedisConnectionManager : IDisposable
         {
             try
             {
-                var pattern = message.ToString();
+                var raw = message.ToString();
+                if (string.IsNullOrEmpty(raw) || raw.Length <= InstanceIdLength) return;
+
+                var senderInstanceId = raw[..InstanceIdLength];
+                var pattern = raw[InstanceIdLength..];
+
+                if (senderInstanceId == _instanceId)
+                {
+                    _logger.LogDebug("🔁 Self-originated pattern update skipped: {Pattern}", pattern);
+                    return;
+                }
+
                 if (string.IsNullOrEmpty(pattern)) return;
 
-                // فقط Memory keys حذف می‌شوند (HotKeys و آمار نگه داشته می‌شوند)
                 ClearMemoryByPattern(pattern);
-
-                // فقط Stampede locks حذف می‌شوند
                 RemoveStampedeLocksByPattern(pattern);
 
                 _logger.LogDebug("🔄 Cleared memory keys matching pattern (HotKeys preserved): {Pattern}", pattern);
@@ -293,7 +314,8 @@ internal sealed class RedisConnectionManager : IDisposable
         try
         {
             var channel = new RedisChannel(GetInvalidationChannel(), RedisChannel.PatternMode.Literal);
-            await _redisSubscriber.PublishAsync(channel, key).ConfigureAwait(false);
+            var message = _instanceId + key;
+            await _redisSubscriber.PublishAsync(channel, message).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -373,8 +395,8 @@ internal sealed class RedisConnectionManager : IDisposable
         try
         {
             var channel = new RedisChannel(GetPatternInvalidationChannel(), RedisChannel.PatternMode.Literal);
-            // Publish pattern to other nodes so they can clean their memory cache
-            await _redisSubscriber.PublishAsync(channel, pattern).ConfigureAwait(false);
+            var message = _instanceId + pattern;
+            await _redisSubscriber.PublishAsync(channel, message).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
