@@ -20,10 +20,12 @@ public static class ServiceCollectionExtensions
         /// </summary>
         public IServiceCollection AddHDistributedHybridCache(Action<CacheOptions>? configureOptions = null)
         {
+            // Ensure logging services are registered
+            services.AddLogging();
+
             var options = new CacheOptions();
             configureOptions?.Invoke(options);
             services.AddSingleton(Options.Create(options));
-
             services.AddMemoryCache(memoryOptions =>
             {
                 memoryOptions.SizeLimit = options.MemoryCacheMaxSize;
