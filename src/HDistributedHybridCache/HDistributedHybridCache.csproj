@@ -7,7 +7,7 @@
 
 	  <IsPackable>true</IsPackable>
 	  <PackageId>HDistributedHybridCache</PackageId>
-	  <Version>1.1.1</Version>
+	  <Version>1.1.2</Version>
 	  <Authors>hamed shakib</Authors>
 	  <Description>Distributed hybrid caching library</Description>
 	  <PackageTags>hybrid-cache;distributed-cache;redis;memory-cache</PackageTags>
@@ -18,7 +18,7 @@
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.9" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
-    <PackageReference Include="StackExchange.Redis" Version="3.0.11" />
+    <PackageReference Include="StackExchange.Redis" Version="3.0.17" />
   </ItemGroup>
 
   <ItemGroup>
