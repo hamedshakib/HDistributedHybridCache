@@ -7,7 +7,7 @@
 
 	  <IsPackable>true</IsPackable>
 	  <PackageId>HDistributedHybridCache.Abstractions</PackageId>
-	  <Version>1.1.0</Version>
+	  <Version>1.1.1</Version>
 	  <Authors>hamed shakib</Authors>
 	  <Description>Abstraction interfaces and models for HDistributedHybridCache distributed hybrid caching library</Description>
 	  <PackageTags>hybrid-cache;distributed-cache;redis;memory-cache;abstractions</PackageTags>
