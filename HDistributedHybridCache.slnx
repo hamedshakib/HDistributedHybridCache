@@ -1,4 +1,8 @@
 <Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="LICENSE" />
+    <File Path="README.md" />
+  </Folder>
   <Project Path="src/HDistributedHybridCache.Abstraction/HDistributedHybridCache.Abstraction.csproj" />
   <Project Path="src/HDistributedHybridCache/HDistributedHybridCache.csproj" Id="6efe5cd3-6b5f-4bd4-aecd-2f6beb8e2822" />
 </Solution>

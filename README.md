@@ -6,6 +6,35 @@
 
 A high-performance distributed hybrid caching library for .NET that combines in-memory caching (L1) with Redis (L2) to provide optimal performance, scalability, and reliability.
 
+## Package Structure
+
+This library is distributed as two separate NuGet packages:
+
+| Package | Description |
+|---------|-------------|
+| **HDistributedHybridCache** | Main implementation package containing the cache service, infrastructure components, and default serializers/compressors |
+| **HDistributedHybridCache.Abstractions** | Abstraction package containing interfaces and models for custom implementations |
+
+### Installation
+
+Install the main package (includes abstractions as a dependency):
+
+```bash
+dotnet add package HDistributedHybridCache
+```
+
+Or install abstractions separately if you need to implement custom serializers/compressors:
+
+```bash
+dotnet add package HDistributedHybridCache.Abstractions
+```
+
+Or via Package Manager:
+
+```powershell
+Install-Package HDistributedHybridCache
+```
+
 ## Features
 
 - 🚀 **Two-Tier Caching**: Memory cache (L1) + Redis cache (L2) for optimal performance
@@ -17,20 +46,8 @@ A high-performance distributed hybrid caching library for .NET that combines in-
 - 📊 **Comprehensive Statistics**: Real-time monitoring with rolling window support
 - 🔄 **Retry Policy**: Exponential backoff retry mechanism for Redis operations
 - ⚙️ **Highly Configurable**: 20+ configuration options for fine-tuning
-
-## Installation
-
-Install the NuGet package:
-
-```bash
-dotnet add package HDistributedHybridCache
-```
-
-Or via Package Manager:
-
-```powershell
-Install-Package HDistributedHybridCache
-```
+- 🧩 **Custom Serialization**: Support for custom cache serializers (ICacheSerializer)
+- 🧺 **Custom Compression**: Support for custom compressors (ICacheCompressor)
 
 ## Configuration
 
@@ -97,6 +114,8 @@ var app = builder.Build();
 Inject the cache service:
 
 ```csharp
+using HDistributedHybridCache.Abstraction.Contracts;
+
 public class MyService
 {
     private readonly ICacheService _cache;
@@ -111,6 +130,8 @@ public class MyService
 ### GetOrSet Pattern
 
 ```csharp
+using HDistributedHybridCache.Abstraction.Models;
+
 // Get or set with full cache key strategy
 var cacheKey = CacheKey.PreferInMemory("user:123", TimeSpan.FromMinutes(10));
 
@@ -199,6 +220,7 @@ var cacheKey = CacheKey.MustInMemory("security:config", TimeSpan.FromHours(1));
 
 ```csharp
 // Register with custom serializer (e.g., System.Text.Json)
+// First implement ICacheSerializer interface (from HDistributedHybridCache.Abstractions)
 builder.Services.AddHDistributedHybridCache<MyCustomSerializer>(options =>
 {
     options.EnableCompression = true;
@@ -209,6 +231,7 @@ builder.Services.AddHDistributedHybridCache<MyCustomSerializer>(options =>
 
 ```csharp
 // Register with custom serializer and compressor
+// First implement ICacheSerializer and ICacheCompressor interfaces (from HDistributedHybridCache.Abstractions)
 builder.Services.AddHDistributedHybridCache<MySerializer, MyCompressor>(options =>
 {
     options.EnableCompression = true;
@@ -216,50 +239,113 @@ builder.Services.AddHDistributedHybridCache<MySerializer, MyCompressor>(options 
 });
 ```
 
+### Implementing Custom Interfaces (from Abstractions Package)
+
+```csharp
+using HDistributedHybridCache.Abstraction.Contracts;
+using HDistributedHybridCache.Abstraction.Models;
+
+// Custom Serializer
+public class MyCustomSerializer : ICacheSerializer
+{
+    public byte[] Serialize<T>(T value)
+    {
+        // Your serialization logic
+        return System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(value);
+    }
+
+    public T? Deserialize<T>(byte[] data)
+    {
+        // Your deserialization logic
+        return System.Text.Json.JsonSerializer.Deserialize<T>(data);
+    }
+}
+
+// Custom Compressor
+public class MyCustomCompressor : ICacheCompressor
+{
+    public byte[] Compress(byte[] data)
+    {
+        // Your compression logic
+        using var memory = new MemoryStream();
+        using var gzip = new GZipStream(memory, CompressionLevel.Optimal);
+        gzip.Write(data, 0, data.Length);
+        return memory.ToArray();
+    }
+
+    public byte[] Decompress(byte[] data)
+    {
+        // Your decompression logic
+        using var memory = new MemoryStream(data);
+        using var gzip = new GZipStream(memory, CompressionMode.Decompress);
+        using var result = new MemoryStream();
+        gzip.CopyTo(result);
+        return result.ToArray();
+    }
+}
+```
+
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    Application Layer                     │
+│                    Application Layer                    │
 └─────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────┐
-│                   ICacheService                          │
-│              (Abstraction Interface)                   │
+│                   ICacheService                         │
+│              (Abstraction Interface)                    │
+│         HDistributedHybridCache.Abstractions            │
 └─────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────┐
-│            HDistributedHybridCacheService                │
-│         (Main Implementation)                          │
+│                  CacheService                           │
+│              (Main Implementation)                      │
+│                 HDistributedHybridCache                 │
 ├─────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────┐   │
-│  │  StampedeProtector                              │   │
-│  │  - Concurrent request protection                │   │
-│  └─────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │  HotKeyTracker                                  │   │
-│  │  - Identifies frequently accessed keys            │   │
-│  └─────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │  RedisConnectionManager                         │   │
-│  │  - Connection health monitoring                 │   │
-│  │  - Pub/Sub invalidation handling              │   │
-│  └─────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │  ICacheSerializer (Default: Newtonsoft)         │   │
-│  ├─────────────────────────────────────────────────┤   │
-│  │  ICacheCompressor (Default: GZip)               │   │
-│  └─────────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │  StampedeProtector                              │   │
+│   │  - Concurrent request protection                │   │
+│   └─────────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │  HotKeyTracker                                  │   │
+│   │  - Identifies frequently accessed keys          │   │
+│   └─────────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │  RedisConnectionHealthMonitor                   │   │
+│   │  - Connection health monitoring                 │   │
+│   └─────────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │  RedisPubSubManager                             │   │
+│   │  - Pub/Sub subscription management              │   │
+│   └─────────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │  RedisPatternDeleter                            │   │
+│   │  - Pattern-based key deletion                   │   │
+│   └─────────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │  RedisKeyHelper                                 │   │
+│   │  - Redis key prefixing                          │   │
+│   └─────────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │  RetryPolicy                                    │   │
+│   │  - Exponential backoff retry                    │   │
+│   └─────────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │  ICacheSerializer (Default: Newtonsoft)         │   │
+│   ├─────────────────────────────────────────────────┤   │
+│   │  ICacheCompressor (Default: GZip)               │   │
+│   └─────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
                             │
-      ┌───────────────────────┴───────────────────────┐
-      ▼                                             ▼
-┌─────────────────┐                    ┌──────────────────┐
-│  Memory Cache   │                    │     Redis        │
-│   (L1 Cache)    │                    │    (L2 Cache)    │
-└─────────────────┘                    └──────────────────┘
+                  ┌─────────┴──────────┐
+                  ▼                    ▼
+        ┌─────────────────┐  ┌──────────────────┐
+        │  Memory Cache   │  │     Redis        │
+        │   (L1 Cache)    │  │    (L2 Cache)    │
+        └─────────────────┘  └──────────────────┘
 ```
 
 ## Complete Example
