@@ -4,6 +4,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 
 namespace HDistributedHybridCache.Infrastructures;
 
@@ -22,10 +23,13 @@ internal sealed class RedisConnectionManager : IDisposable
     private readonly CacheStatistics _statistics;
     private readonly ConcurrentDictionary<string, Lazy<SemaphoreSlim>> _stampedeLocks;
 
+    // Cache of compiled regexes per pattern to avoid re-building/re-compiling
+    // a Regex object on every single invalidation message.
+    private readonly ConcurrentDictionary<string, Regex> _patternRegexCache = new();
+
     private volatile bool _redisConnected;
     private volatile bool _subscribed;
 
-    public bool IsConnected => _redisConnected;
     public IDatabase RedisDb => _redisDb;
 
     public RedisConnectionManager(
@@ -51,7 +55,9 @@ internal sealed class RedisConnectionManager : IDisposable
         if (_options.EnablePubSub)
         {
             _redisSubscriber = redisConnection.GetSubscriber();
-            SubscribeToInvalidationEvents();
+            // Fire-and-forget on the constructor; SubscribeAsync itself is async internally,
+            // but we block here once at startup so the manager is fully ready when returned.
+            SubscribeToInvalidationEventsAsync().GetAwaiter().GetResult();
         }
 
         redisConnection.ConnectionFailed += OnConnectionFailed;
@@ -63,7 +69,7 @@ internal sealed class RedisConnectionManager : IDisposable
         if (!_redisConnected)
         {
             throw new RedisConnectionException(ConnectionFailureType.UnableToConnect,
-                "Cannot write to cache: Redis is disconnected.");
+                "Cannot use cache: Redis is disconnected.");
         }
     }
 
@@ -95,14 +101,21 @@ internal sealed class RedisConnectionManager : IDisposable
         _statistics.Reset();
     }
 
-    private void OnConnectionRestored(object? sender, ConnectionFailedEventArgs e)
+    private async void OnConnectionRestored(object? sender, ConnectionFailedEventArgs e)
     {
         _redisConnected = true;
         _logger.LogInformation("🟢 Redis connection RESTORED. Re-subscribing to invalidation events...");
 
         if (_options.EnablePubSub)
         {
-            SubscribeToInvalidationEvents();
+            try
+            {
+                await SubscribeToInvalidationEventsAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to re-subscribe to invalidation events after reconnect.");
+            }
         }
     }
 
@@ -114,22 +127,20 @@ internal sealed class RedisConnectionManager : IDisposable
 
     private string GetPatternInvalidationChannel() => $"{_options.PubSubChannelPrefix}:invalidate:pattern";
 
-    private void SubscribeToInvalidationEvents()
+    private async Task SubscribeToInvalidationEventsAsync()
     {
         if (_redisSubscriber == null) return;
 
-        if (_subscribed)
-        {
-            var oldChannel = new RedisChannel(GetInvalidationChannel(), RedisChannel.PatternMode.Literal);
-            _redisSubscriber.UnsubscribeAsync(oldChannel).Wait();
-
-            var oldPatternChannel = new RedisChannel(GetPatternInvalidationChannel(), RedisChannel.PatternMode.Literal);
-            _redisSubscriber.UnsubscribeAsync(oldPatternChannel).Wait();
-        }
+        // Always start from a clean slate. StackExchange.Redis auto re-registers
+        // its own subscriptions internally after a reconnect, so relying on our
+        // "_subscribed" flag alone can leave duplicate handlers registered.
+        // UnsubscribeAll() guarantees there is exactly one handler per channel
+        // after this call, regardless of what the multiplexer did internally.
+        await _redisSubscriber.UnsubscribeAllAsync().ConfigureAwait(false);
 
         // کانال برای کلید تکی
         var channel = new RedisChannel(GetInvalidationChannel(), RedisChannel.PatternMode.Literal);
-        _redisSubscriber.SubscribeAsync(channel, async (redisChannel, message) =>
+        await _redisSubscriber.SubscribeAsync(channel, (redisChannel, message) =>
         {
             try
             {
@@ -147,11 +158,11 @@ internal sealed class RedisConnectionManager : IDisposable
             {
                 _logger.LogError(ex, "Pub/Sub error");
             }
-        });
+        }).ConfigureAwait(false);
 
         // کانال برای pattern
         var patternChannel = new RedisChannel(GetPatternInvalidationChannel(), RedisChannel.PatternMode.Literal);
-        _redisSubscriber.SubscribeAsync(patternChannel, async (redisChannel, message) =>
+        await _redisSubscriber.SubscribeAsync(patternChannel, (redisChannel, message) =>
         {
             try
             {
@@ -170,7 +181,7 @@ internal sealed class RedisConnectionManager : IDisposable
             {
                 _logger.LogError(ex, "Pub/Sub pattern error");
             }
-        });
+        }).ConfigureAwait(false);
 
         _subscribed = true;
     }
@@ -182,10 +193,10 @@ internal sealed class RedisConnectionManager : IDisposable
 
         if (_memoryCache is MemoryCache concreteCache)
         {
-            var regexPattern = PatternToRegex(pattern);
+            var regex = GetOrCreatePatternRegex(pattern);
             var keysToRemove = concreteCache.Keys
                 .Cast<string>()
-                .Where(k => System.Text.RegularExpressions.Regex.IsMatch(k, regexPattern))
+                .Where(k => regex.IsMatch(k))
                 .ToList();
 
             foreach (var key in keysToRemove)
@@ -201,9 +212,9 @@ internal sealed class RedisConnectionManager : IDisposable
     {
         if (string.IsNullOrEmpty(pattern)) return;
 
-        var regexPattern = PatternToRegex(pattern);
+        var regex = GetOrCreatePatternRegex(pattern);
         var keysToRemove = _stampedeLocks.Keys
-            .Where(k => System.Text.RegularExpressions.Regex.IsMatch(k, regexPattern))
+            .Where(k => regex.IsMatch(k))
             .ToList();
 
         foreach (var key in keysToRemove)
@@ -212,12 +223,67 @@ internal sealed class RedisConnectionManager : IDisposable
         }
     }
 
+    private Regex GetOrCreatePatternRegex(string pattern)
+    {
+        return _patternRegexCache.GetOrAdd(pattern, static p =>
+            new Regex(PatternToRegex(p), RegexOptions.Compiled));
+    }
+
+    /// <summary>
+    /// Converts a Redis glob-style pattern (as used by SCAN/KEYS MATCH) into an
+    /// equivalent .NET regex. Supports '*', '?', and character classes like
+    /// '[abc]', '[^abc]', '[a-z]', as well as backslash-escaped literals.
+    /// </summary>
     private static string PatternToRegex(string pattern)
     {
-        var regexPattern = System.Text.RegularExpressions.Regex.Escape(pattern)
-            .Replace("\\*", ".*")
-            .Replace("\\?", ".");
-        return "^" + regexPattern + "$";
+        var sb = new System.Text.StringBuilder("^");
+        var i = 0;
+        while (i < pattern.Length)
+        {
+            var c = pattern[i];
+            switch (c)
+            {
+                case '*':
+                    sb.Append(".*");
+                    i++;
+                    break;
+                case '?':
+                    sb.Append('.');
+                    i++;
+                    break;
+                case '\\' when i + 1 < pattern.Length:
+                    // Redis glob escape: '\x' means literal 'x'
+                    sb.Append(Regex.Escape(pattern[i + 1].ToString()));
+                    i += 2;
+                    break;
+                case '[':
+                    {
+                        // Copy the character class as-is (translating to regex class syntax),
+                        // Redis glob classes are already very close to regex classes.
+                        var end = pattern.IndexOf(']', i + 1);
+                        if (end == -1)
+                        {
+                            // No closing bracket: treat '[' as a literal.
+                            sb.Append(Regex.Escape("["));
+                            i++;
+                        }
+                        else
+                        {
+                            var classBody = pattern.Substring(i, end - i + 1); // includes [ and ]
+                            // Redis uses '^' for negation same as regex; '-' for ranges same as regex.
+                            sb.Append(classBody);
+                            i = end + 1;
+                        }
+                        break;
+                    }
+                default:
+                    sb.Append(Regex.Escape(c.ToString()));
+                    i++;
+                    break;
+            }
+        }
+        sb.Append('$');
+        return sb.ToString();
     }
 
     public async Task PublishInvalidationAsync(string key)
@@ -241,57 +307,57 @@ internal sealed class RedisConnectionManager : IDisposable
 
     /// <summary>
     /// Removes all keys matching the specified pattern from Redis using SCAN.
-    /// Returns the number of keys deleted.
+    /// SCAN and DEL are performed separately (no Lua script), so DEL commands
+    /// are routed by StackExchange.Redis per-key hash slot, which keeps this
+    /// safe on both standalone and clustered deployments (as long as every
+    /// master shard is scanned — see <paramref name="scanAllMasters"/>).
+    /// Returns the number of keys actually deleted.
     /// </summary>
-    public async Task<long> RemoveByPatternAsync(string pattern, CancellationToken cancellationToken = default)
+    public async Task<long> RemoveByPatternAsync(
+        string pattern,
+        bool scanAllMasters = true,
+        CancellationToken cancellationToken = default)
     {
         if (!_redisConnected) return 0;
 
+        const int scanBatchSize = 1000;
+        const int deleteBatchSize = 500;
+
         long deletedCount = 0;
-        var cursor = 0L;
 
-        // SCAN with COUNT 1000 for batch processing
-        const int batchSize = 1000;
+        var servers = scanAllMasters
+            ? _redisConnection.GetEndPoints()
+                .Select(ep => _redisConnection.GetServer(ep))
+                .Where(s => !s.IsReplica)
+                .ToList()
+            : [_redisConnection.GetServer(_redisConnection.GetEndPoints().First())];
 
-        do
+        foreach (var server in servers)
         {
-            // Use Lua script to scan and delete in one operation
-            var script = @"
-                local cursor = tonumber(ARGV[1])
-                local count = tonumber(ARGV[2])
-                local result = redis.call('SCAN', cursor, 'MATCH', KEYS[1], 'COUNT', count)
+            var buffer = new List<RedisKey>(deleteBatchSize);
 
-                local newCursor = tonumber(result[1])
-                local keys = result[2]
-
-                if #keys > 0 then
-                    redis.call('DEL', unpack(keys))
-                end
-
-                return {tostring(newCursor), #keys}
-            ";
-
-            var result = await _redisDb.ScriptEvaluateAsync(
-                script,
-                [pattern],
-                [cursor, batchSize]
-            ).WaitAsync(cancellationToken);
-
-            // Parse result
-            var resultString = result.ToString();
-            var parts = resultString.Split(' ');
-            
-            if (parts.Length >= 2)
+            await foreach (var key in server.KeysAsync(
+                                   database: _redisDb.Database,
+                                   pattern: pattern,
+                                   pageSize: scanBatchSize)
+                               .WithCancellation(cancellationToken))
             {
-                cursor = long.Parse(parts[0]);
-                deletedCount += int.Parse(parts[1]);
-            }
-            else
-            {
-                cursor = 0;
+                buffer.Add(key);
+
+                if (buffer.Count >= deleteBatchSize)
+                {
+                    deletedCount += await _redisDb.KeyDeleteAsync(buffer.ToArray())
+                        .WaitAsync(cancellationToken);
+                    buffer.Clear();
+                }
             }
 
-        } while (cursor != 0);
+            if (buffer.Count > 0)
+            {
+                deletedCount += await _redisDb.KeyDeleteAsync(buffer.ToArray())
+                    .WaitAsync(cancellationToken);
+            }
+        }
 
         return deletedCount;
     }

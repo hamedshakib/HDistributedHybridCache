@@ -226,7 +226,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         if (_redis.IsRedisConnected())
         {
             // پیدا کردن و حذف کلیدهای Redis با pattern
-            deletedCount = await _redis.RemoveByPatternAsync(redisKeyPattern, cancellationToken);
+            deletedCount = await _redis.RemoveByPatternAsync(redisKeyPattern,true, cancellationToken);
 
             // ارسال پیام Pub/Sub برای نودهای دیگر
             // بدون KeyPrefix چون سایر نودها ممکن است KeyPrefix متفاوت داشته باشند
