@@ -8,6 +8,9 @@ using StackExchange.Redis;
 
 namespace HDistributedHybridCache.Services;
 
+/// <summary>
+/// Extension methods for registering the distributed hybrid cache service.
+/// </summary>
 public static class ServiceCollectionExtensions
 {
     extension(IServiceCollection services)
@@ -15,8 +18,7 @@ public static class ServiceCollectionExtensions
         /// <summary>
         /// Registers the distributed hybrid cache service with default serializer and optional compression.
         /// </summary>
-        public IServiceCollection AddHDistributedHybridCache(
-        Action<CacheOptions>? configureOptions = null)
+        public IServiceCollection AddHDistributedHybridCache(Action<CacheOptions>? configureOptions = null)
         {
             var options = new CacheOptions();
             configureOptions?.Invoke(options);
@@ -62,7 +64,7 @@ public static class ServiceCollectionExtensions
                 services.TryAddSingleton<ICacheCompressor, GZipCacheCompressor>();
             }
 
-            services.AddSingleton<ICacheService, HDistributedHybridCacheService>();
+            services.AddSingleton<ICacheService, CacheService>();
 
             return services;
         }
@@ -70,8 +72,7 @@ public static class ServiceCollectionExtensions
         /// <summary>
         /// Registers the cache service with a custom serializer type.
         /// </summary>
-        public IServiceCollection AddHDistributedHybridCache<T>(
-            Action<CacheOptions>? configureOptions = null)
+        public IServiceCollection AddHDistributedHybridCache<T>(Action<CacheOptions>? configureOptions = null)
             where T : class, ICacheSerializer
         {
             services.AddHDistributedHybridCache(configureOptions);
@@ -82,8 +83,7 @@ public static class ServiceCollectionExtensions
         /// <summary>
         /// Registers the cache service with custom serializer and compressor types.
         /// </summary>
-        public IServiceCollection AddHDistributedHybridCache<TSerializer, TCompressor>(
-            Action<CacheOptions>? configureOptions = null)
+        public IServiceCollection AddHDistributedHybridCache<TSerializer, TCompressor>(Action<CacheOptions>? configureOptions = null)
             where TSerializer : class, ICacheSerializer
             where TCompressor : class, ICacheCompressor
         {
@@ -96,8 +96,7 @@ public static class ServiceCollectionExtensions
         /// <summary>
         /// Registers the cache service with statistics and rolling window disabled.
         /// </summary>
-        public IServiceCollection AddHDistributedHybridCacheWithoutStats(
-            Action<CacheOptions>? configureOptions = null)
+        public IServiceCollection AddHDistributedHybridCacheWithoutStats(Action<CacheOptions>? configureOptions = null)
         {
             return services.AddHDistributedHybridCache(options =>
             {

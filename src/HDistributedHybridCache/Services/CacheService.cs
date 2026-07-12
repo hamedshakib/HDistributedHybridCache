@@ -1,6 +1,8 @@
-﻿using HDistributedHybridCache.Abstraction.Contracts;
+using HDistributedHybridCache.Abstraction.Contracts;
 using HDistributedHybridCache.Abstraction.Models;
 using HDistributedHybridCache.Infrastructures;
+using HDistributedHybridCache.Infrastructures.Redis;
+using HDistributedHybridCache.Infrastructures.Utilities;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -9,26 +11,34 @@ using System.Collections.Concurrent;
 
 namespace HDistributedHybridCache.Services;
 
-internal class HDistributedHybridCacheService : ICacheService, IDisposable
+/// <summary>
+/// Main cache service implementation providing hybrid caching (Memory + Redis).
+/// </summary>
+internal sealed class CacheService : ICacheService, IDisposable
 {
     private readonly IMemoryCache _memoryCache;
     private readonly CacheOptions _options;
-    private readonly ILogger<HDistributedHybridCacheService> _logger;
+    private readonly ILogger<CacheService> _logger;
     private readonly HotKeyTracker _hotKeyTracker;
     private readonly CacheStatistics _statistics;
     private readonly ICacheSerializer _serializer;
     private readonly ICacheCompressor? _compressor;
-    private readonly RedisConnectionManager _redis;
+    private readonly RedisConnectionHealthMonitor _redisHealthMonitor;
+    private readonly RedisPubSubManager _redisPubSub;
+    private readonly RedisPatternDeleter _redisPatternDeleter;
+    private readonly RedisKeyHelper _keyHelper;
+    private readonly RetryPolicy _retryPolicy;
     private readonly StampedeProtector _stampedeProtector;
+    private readonly ConcurrentDictionary<string, Lazy<SemaphoreSlim>> _stampedeLocks;
 
     // Null Cache Sentinel — a single byte[0] stored in Redis to represent a cached null
     private static readonly byte[] _nullSentinel = [0];
 
-    public HDistributedHybridCacheService(
+    public CacheService(
         IMemoryCache memoryCache,
         IConnectionMultiplexer redisConnection,
         IOptions<CacheOptions> options,
-        ILogger<HDistributedHybridCacheService> logger,
+        ILogger<CacheService> logger,
         ICacheSerializer? serializer = null,
         ICacheCompressor? compressor = null)
     {
@@ -43,7 +53,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         _compressor = _options.EnableCompression ? (compressor ?? new GZipCacheCompressor()) : null;
 
         // Shared stampede locks dictionary for cross-component access
-        var stampedeLocks = new ConcurrentDictionary<string, Lazy<SemaphoreSlim>>();
+        _stampedeLocks = new ConcurrentDictionary<string, Lazy<SemaphoreSlim>>();
 
         _stampedeProtector = new StampedeProtector(
             _options.EnableCacheStampedeProtection,
@@ -51,14 +61,32 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
             _options.StampedeLockCleanupInterval,
             _logger);
 
-        _redis = new RedisConnectionManager(
+        _redisHealthMonitor = new RedisConnectionHealthMonitor(
             redisConnection,
             _options,
-            _logger,
+            logger,
+            _memoryCache,
+            _hotKeyTracker,
+            _statistics);
+
+        _keyHelper = new RedisKeyHelper(_options);
+
+        _redisPatternDeleter = new RedisPatternDeleter(
+            redisConnection.GetDatabase(_options.RedisDatabase),
+            logger,
+            _options);
+
+        _redisPubSub = new RedisPubSubManager(
+            redisConnection,
+            _options,
+            logger,
             _memoryCache,
             _hotKeyTracker,
             _statistics,
-            stampedeLocks);
+            _stampedeLocks,
+            _keyHelper);
+
+        _retryPolicy = new RetryPolicy(_options, logger);
     }
 
     // --- Direct Redis Get (no L1 Memory caching) ---
@@ -66,10 +94,10 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
 
-        var redisKey = _redis.GetFullKey(key);
+        var redisKey = _keyHelper.GetFullKey(key);
         _statistics.RecordRequest();
 
-        if (!_redis.IsRedisConnected())
+        if (!_redisHealthMonitor.IsRedisConnected())
         {
             _statistics.RecordMiss(key);
             return default;
@@ -77,8 +105,8 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
 
         try
         {
-            var redisValue = await ExecuteWithRetryAsync(
-                () => _redis.RedisDb.StringGetAsync(redisKey).WaitAsync(cancellationToken),
+            var redisValue = await _retryPolicy.ExecuteWithRetryAsync(
+                () => _redisPatternDeleter.RedisDb.StringGetAsync(redisKey).WaitAsync(cancellationToken),
                 cancellationToken).ConfigureAwait(false);
 
             if (redisValue.HasValue)
@@ -101,16 +129,16 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
     {
         ArgumentNullException.ThrowIfNull(cacheKey);
 
-        _redis.CheckConnectionOrThrow();
-        var redisKey = _redis.GetFullKey(cacheKey.Key);
+        _redisHealthMonitor.CheckConnectedOrThrow();
+        var redisKey = _keyHelper.GetFullKey(cacheKey.Key);
 
         try
         {
             // Null value → store sentinel if null caching is enabled
             if (value is null && _options.EnableNullCaching)
             {
-                await ExecuteWithRetryAsync(
-                    () => _redis.RedisDb.StringSetAsync(redisKey, _nullSentinel, _options.NullCacheTtl)
+                await _retryPolicy.ExecuteWithRetryAsync(
+                    () => _redisPatternDeleter.RedisDb.StringSetAsync(redisKey, _nullSentinel, _options.NullCacheTtl)
                         .WaitAsync(cancellationToken),
                     cancellationToken).ConfigureAwait(false);
 
@@ -119,8 +147,8 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
             }
 
             var data = SerializeValue(value);
-            await ExecuteWithRetryAsync(
-                () => _redis.RedisDb.StringSetAsync(redisKey, data, cacheKey.PreferredRedisTtl ?? _options.DefaultRedisTtl)
+            await _retryPolicy.ExecuteWithRetryAsync(
+                () => _redisPatternDeleter.RedisDb.StringSetAsync(redisKey, data, cacheKey.PreferredRedisTtl ?? _options.DefaultRedisTtl)
                     .WaitAsync(cancellationToken),
                 cancellationToken).ConfigureAwait(false);
 
@@ -131,7 +159,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
 
             if (_options.EnablePubSub && cacheKey.StoreType != CacheStoreType.NeverInMemory)
             {
-                await _redis.PublishInvalidationAsync(cacheKey.Key).ConfigureAwait(false);
+                await _redisPubSub.PublishInvalidationAsync(cacheKey.Key).ConfigureAwait(false);
             }
 
             _logger.LogDebug("Cache SET: {Key} (StoreType: {StoreType})", cacheKey.Key, cacheKey.StoreType);
@@ -157,7 +185,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         if (cacheResult.HasValue)
             return cacheResult.Value!;
 
-        if (!_redis.IsRedisConnected())
+        if (!_redisHealthMonitor.IsRedisConnected())
         {
             _logger.LogWarning("Redis is disconnected. GetOrSetAsync will use factory directly for key: {Key}", cacheKey.Key);
             return await factory(cancellationToken).ConfigureAwait(false);
@@ -183,20 +211,22 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
     {
         ArgumentNullException.ThrowIfNull(cacheKey);
 
-        var redisKey = _redis.GetFullKey(cacheKey.Key);
+        var redisKey = _keyHelper.GetFullKey(cacheKey.Key);
 
         _memoryCache.Remove(cacheKey.Key);
         _hotKeyTracker.RemoveKey(cacheKey.Key);
         _stampedeProtector.RemoveKey(cacheKey.Key);
 
-        if (_redis.IsRedisConnected())
+        if (_redisHealthMonitor.IsRedisConnected())
         {
-            await _redis.RedisDb.KeyDeleteAsync(redisKey).WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _retryPolicy.ExecuteWithRetryAsync(
+                () => _redisPatternDeleter.RedisDb.KeyDeleteAsync(redisKey).WaitAsync(cancellationToken),
+                cancellationToken).ConfigureAwait(false);
         }
 
         if (_options.EnablePubSub)
         {
-            await _redis.PublishInvalidationAsync(cacheKey.Key).ConfigureAwait(false);
+            await _redisPubSub.PublishInvalidationAsync(cacheKey.Key).ConfigureAwait(false);
         }
     }
 
@@ -220,17 +250,16 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(pattern);
 
-        var redisKeyPattern = _redis.GetFullKey(pattern);
+        var redisKeyPattern = _keyHelper.GetFullKeyPattern(pattern);
 
         long deletedCount = 0;
-        if (_redis.IsRedisConnected())
+        if (_redisHealthMonitor.IsRedisConnected())
         {
-            deletedCount = await _redis.RemoveByPatternAsync(redisKeyPattern,true, cancellationToken);
+            deletedCount = await _redisPatternDeleter.RemoveByPatternAsync(redisKeyPattern, true, cancellationToken);
 
-            await _redis.PublishPatternInvalidationAsync(pattern, cancellationToken);
+            await _redisPubSub.PublishPatternInvalidationAsync(pattern, cancellationToken);
         }
 
-        
         ClearMemoryKeysByPattern(pattern);
 
         _logger.LogInformation("Removed {Count} keys matching pattern '{Pattern}'", deletedCount, pattern);
@@ -243,7 +272,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
 
         if (_memoryCache is MemoryCache concreteCache)
         {
-            var regexPattern = PatternToRegex(pattern);
+            var regexPattern = PatternToRegexConverter.ConvertToRegex(pattern);
             var keysToRemove = concreteCache.Keys
                 .Cast<string>()
                 .Where(k => System.Text.RegularExpressions.Regex.IsMatch(k, regexPattern))
@@ -258,24 +287,13 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         }
     }
 
-    private static string PatternToRegex(string pattern)
-    {
-        // Convert Redis wildcard to regex
-        // * -> .*
-        // ? -> .
-        var regexPattern = System.Text.RegularExpressions.Regex.Escape(pattern)
-            .Replace("\\*", ".*")
-            .Replace("\\?", ".");
-        return "^" + regexPattern + "$";
-    }
-
     public CacheStatistics GetStatistics() => _statistics;
 
     // --- Private Helpers ---
 
     private bool ShouldStoreInMemory(CacheKey cacheKey)
     {
-        if (!_redis.IsRedisConnected())
+        if (!_redisHealthMonitor.IsRedisConnected())
             return false;
 
         return cacheKey.StoreType switch
@@ -291,7 +309,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
     // Core cache lookup — checks L1 (Memory) then L2 (Redis)
     private async Task<CacheResult<T>> GetFromCacheAsync<T>(CacheKey cacheKey, CancellationToken cancellationToken)
     {
-        var redisKey = _redis.GetFullKey(cacheKey.Key);
+        var redisKey = _keyHelper.GetFullKey(cacheKey.Key);
 
         _statistics.RecordRequest();
         _hotKeyTracker.RecordAccess(cacheKey.Key, cacheKey.StoreType == CacheStoreType.HotKeyOnly);
@@ -300,20 +318,20 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         if (_memoryCache.TryGetValue(cacheKey.Key, out T? memoryValue))
         {
             _statistics.RecordMemoryHit(cacheKey.Key);
-            return CacheResult<T>.Hit(memoryValue);
+            return HDistributedHybridCache.Abstraction.Models.CacheResult<T>.Hit(memoryValue);
         }
 
-        if (!_redis.IsRedisConnected())
+        if (!_redisHealthMonitor.IsRedisConnected())
         {
             _statistics.RecordMiss(cacheKey.Key);
-            return CacheResult<T>.Miss;
+            return HDistributedHybridCache.Abstraction.Models.CacheResult<T>.Miss;
         }
 
         // L2: Redis Cache
         try
         {
-            var redisValue = await ExecuteWithRetryAsync(
-                () => _redis.RedisDb.StringGetAsync(redisKey).WaitAsync(cancellationToken),
+            var redisValue = await _retryPolicy.ExecuteWithRetryAsync(
+                () => _redisPatternDeleter.RedisDb.StringGetAsync(redisKey).WaitAsync(cancellationToken),
                 cancellationToken).ConfigureAwait(false);
 
             if (redisValue.HasValue)
@@ -327,7 +345,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
                     SetInMemory(cacheKey.Key, value, cacheKey);
                 }
 
-                return CacheResult<T>.Hit(value);
+                return HDistributedHybridCache.Abstraction.Models.CacheResult<T>.Hit(value);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -336,7 +354,7 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         }
 
         _statistics.RecordMiss(cacheKey.Key);
-        return CacheResult<T>.Miss;
+        return HDistributedHybridCache.Abstraction.Models.CacheResult<T>.Miss;
     }
 
     private T? DeserializeData<T>(byte[] data, string logKey)
@@ -409,42 +427,12 @@ internal class HDistributedHybridCacheService : ICacheService, IDisposable
         _ => CacheItemPriority.Normal
     };
 
-    // --- Retry Policy with Exponential Backoff ---
-    private async Task<T> ExecuteWithRetryAsync<T>(Func<Task<T>> operation, CancellationToken cancellationToken)
-    {
-        var retryCount = _options.RedisRetryCount;
-        var baseDelay = _options.RedisRetryBaseDelayMs;
-
-        Exception? lastException = null;
-
-        for (int attempt = 0; attempt <= retryCount; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            try
-            {
-                return await operation().ConfigureAwait(false);
-            }
-            catch (Exception ex) when (attempt < retryCount && ex is not OperationCanceledException)
-            {
-                lastException = ex;
-                _logger.LogWarning(ex,
-                    "Redis operation failed (attempt {Attempt}/{MaxRetries}). Retrying...",
-                    attempt + 1, retryCount);
-
-                var delay = TimeSpan.FromMilliseconds(baseDelay * Math.Pow(2, attempt));
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        throw new RedisException($"Redis operation failed after {retryCount + 1} attempts", lastException);
-    }
-
     // --- Dispose ---
     public void Dispose()
     {
         _stampedeProtector.Dispose();
-        _redis.Dispose();
+        _redisHealthMonitor.Dispose();
+        _redisPubSub.Dispose();
         GC.SuppressFinalize(this);
     }
 }

@@ -4,128 +4,60 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.RegularExpressions;
 
-namespace HDistributedHybridCache.Infrastructures;
+namespace HDistributedHybridCache.Infrastructures.Redis;
 
 /// <summary>
-/// Manages Redis connection health monitoring and Pub/Sub invalidation events.
+/// Manages Redis Pub/Sub subscription and invalidation events.
 /// </summary>
-internal sealed class RedisConnectionManager : IDisposable
+internal sealed class RedisPubSubManager : IDisposable
 {
-    private readonly IConnectionMultiplexer _redisConnection;
-    private readonly IDatabase _redisDb;
-    private readonly ISubscriber? _redisSubscriber;
+    private readonly ISubscriber _redisSubscriber;
     private readonly CacheOptions _options;
     private readonly ILogger _logger;
     private readonly IMemoryCache _memoryCache;
     private readonly HotKeyTracker _hotKeyTracker;
     private readonly CacheStatistics _statistics;
     private readonly ConcurrentDictionary<string, Lazy<SemaphoreSlim>> _stampedeLocks;
+    private readonly RedisKeyHelper _keyHelper;
 
     private readonly string _instanceId = Guid.NewGuid().ToString("N");
-    public string InstanceId => _instanceId;
     private const int InstanceIdLength = 32;
 
     // Cache of compiled regexes per pattern to avoid re-building/re-compiling
-    // a Regex object on every single invalidation message.
     private readonly ConcurrentDictionary<string, Regex> _patternRegexCache = new();
 
-    private volatile bool _redisConnected;
     private volatile bool _subscribed;
 
-    public IDatabase RedisDb => _redisDb;
+    public string InstanceId => _instanceId;
 
-    public RedisConnectionManager(
+    public RedisPubSubManager(
         IConnectionMultiplexer redisConnection,
         CacheOptions options,
         ILogger logger,
         IMemoryCache memoryCache,
         HotKeyTracker hotKeyTracker,
         CacheStatistics statistics,
-        ConcurrentDictionary<string, Lazy<SemaphoreSlim>> stampedeLocks)
+        ConcurrentDictionary<string, Lazy<SemaphoreSlim>> stampedeLocks,
+        RedisKeyHelper keyHelper)
     {
-        _redisConnection = redisConnection;
-        _redisDb = redisConnection.GetDatabase(options.RedisDatabase);
         _options = options;
         _logger = logger;
         _memoryCache = memoryCache;
         _hotKeyTracker = hotKeyTracker;
         _statistics = statistics;
         _stampedeLocks = stampedeLocks;
+        _keyHelper = keyHelper;
 
-        _redisConnected = redisConnection.IsConnected;
+        _redisSubscriber = redisConnection.GetSubscriber();
 
-        if (_options.EnablePubSub)
+        if (options.EnablePubSub)
         {
-            _redisSubscriber = redisConnection.GetSubscriber();
-            // Fire-and-forget on the constructor; SubscribeAsync itself is async internally,
-            // but we block here once at startup so the manager is fully ready when returned.
             SubscribeToInvalidationEventsAsync().GetAwaiter().GetResult();
         }
-
-        redisConnection.ConnectionFailed += OnConnectionFailed;
-        redisConnection.ConnectionRestored += OnConnectionRestored;
     }
-
-    public void CheckConnectionOrThrow()
-    {
-        if (!_redisConnected)
-        {
-            throw new RedisConnectionException(ConnectionFailureType.UnableToConnect,
-                "Cannot use cache: Redis is disconnected.");
-        }
-    }
-
-    public bool IsRedisConnected()
-    {
-        if (!_redisConnected)
-        {
-            _logger.LogWarning("Redis is disconnected. Skipping Redis operations.");
-            return false;
-        }
-        return true;
-    }
-
-    // ================================================================
-    // Redis Connection Events
-    // ================================================================
-
-    private void OnConnectionFailed(object? sender, ConnectionFailedEventArgs e)
-    {
-        _redisConnected = false;
-        _subscribed = false;
-        _logger.LogError(e.Exception, "🔴 Redis connection FAILED. Clearing memory cache to prevent data inconsistency.");
-
-        if (_memoryCache is MemoryCache concreteCache)
-        {
-            concreteCache.Compact(1.0);
-        }
-        _hotKeyTracker.Cleanup();
-        _statistics.Reset();
-    }
-
-    private async void OnConnectionRestored(object? sender, ConnectionFailedEventArgs e)
-    {
-        _redisConnected = true;
-        _logger.LogInformation("🟢 Redis connection RESTORED. Re-subscribing to invalidation events...");
-
-        if (_options.EnablePubSub)
-        {
-            try
-            {
-                await SubscribeToInvalidationEventsAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to re-subscribe to invalidation events after reconnect.");
-            }
-        }
-    }
-
-    // ================================================================
-    // Pub/Sub Invalidation
-    // ================================================================
 
     private string GetInvalidationChannel() => $"{_options.PubSubChannelPrefix}:invalidate:key";
 
@@ -133,11 +65,8 @@ internal sealed class RedisConnectionManager : IDisposable
 
     private async Task SubscribeToInvalidationEventsAsync()
     {
-        if (_redisSubscriber == null) return;
-
         await _redisSubscriber.UnsubscribeAllAsync().ConfigureAwait(false);
 
-        // کانال برای کلید تکی
         var channel = new RedisChannel(GetInvalidationChannel(), RedisChannel.PatternMode.Literal);
         await _redisSubscriber.SubscribeAsync(channel, (redisChannel, message) =>
         {
@@ -151,9 +80,6 @@ internal sealed class RedisConnectionManager : IDisposable
 
                 if (senderInstanceId == _instanceId)
                 {
-                    // این پیام از خود همین instance است. چون مقدار جدید همین الان
-                    // در SetAsync، قبل از Publish، در مموری لوکال ست شده،
-                    // نیازی به حذف/invalidate نیست.
                     _logger.LogDebug("🔁 Self-originated update skipped: {Key}", key);
                     return;
                 }
@@ -257,7 +183,7 @@ internal sealed class RedisConnectionManager : IDisposable
     /// </summary>
     private static string PatternToRegex(string pattern)
     {
-        var sb = new System.Text.StringBuilder("^");
+        var sb = new StringBuilder("^");
         var i = 0;
         while (i < pattern.Length)
         {
@@ -309,7 +235,7 @@ internal sealed class RedisConnectionManager : IDisposable
 
     public async Task PublishInvalidationAsync(string key)
     {
-        if (_redisSubscriber == null || !_redisConnected) return;
+        if (!_subscribed) return;
 
         try
         {
@@ -323,74 +249,9 @@ internal sealed class RedisConnectionManager : IDisposable
         }
     }
 
-    // ================================================================
-    // Pattern-based Deletion
-    // ================================================================
-
-    /// <summary>
-    /// Removes all keys matching the specified pattern from Redis using SCAN.
-    /// SCAN and DEL are performed separately (no Lua script), so DEL commands
-    /// are routed by StackExchange.Redis per-key hash slot, which keeps this
-    /// safe on both standalone and clustered deployments (as long as every
-    /// master shard is scanned — see <paramref name="scanAllMasters"/>).
-    /// Returns the number of keys actually deleted.
-    /// </summary>
-    public async Task<long> RemoveByPatternAsync(
-        string pattern,
-        bool scanAllMasters = true,
-        CancellationToken cancellationToken = default)
-    {
-        if (!_redisConnected) return 0;
-
-        const int scanBatchSize = 1000;
-        const int deleteBatchSize = 500;
-
-        long deletedCount = 0;
-
-        var servers = scanAllMasters
-            ? _redisConnection.GetEndPoints()
-                .Select(ep => _redisConnection.GetServer(ep))
-                .Where(s => !s.IsReplica)
-                .ToList()
-            : [_redisConnection.GetServer(_redisConnection.GetEndPoints().First())];
-
-        foreach (var server in servers)
-        {
-            var buffer = new List<RedisKey>(deleteBatchSize);
-
-            await foreach (var key in server.KeysAsync(
-                                   database: _redisDb.Database,
-                                   pattern: pattern,
-                                   pageSize: scanBatchSize)
-                               .WithCancellation(cancellationToken))
-            {
-                buffer.Add(key);
-
-                if (buffer.Count >= deleteBatchSize)
-                {
-                    deletedCount += await _redisDb.KeyDeleteAsync(buffer.ToArray())
-                        .WaitAsync(cancellationToken);
-                    buffer.Clear();
-                }
-            }
-
-            if (buffer.Count > 0)
-            {
-                deletedCount += await _redisDb.KeyDeleteAsync(buffer.ToArray())
-                    .WaitAsync(cancellationToken);
-            }
-        }
-
-        return deletedCount;
-    }
-
-    /// <summary>
-    /// Publishes pattern invalidation to other nodes via Pub/Sub.
-    /// Other nodes will remove keys matching this pattern from their memory cache.
-    /// </summary>
     public async Task PublishPatternInvalidationAsync(string pattern, CancellationToken cancellationToken = default)
     {
-        if (_redisSubscriber == null || !_redisConnected) return;
+        if (!_subscribed) return;
 
         try
         {
@@ -404,16 +265,23 @@ internal sealed class RedisConnectionManager : IDisposable
         }
     }
 
-    // ================================================================
-    // Key Helpers
-    // ================================================================
-
-    public string GetFullKey(string key) =>
-        string.IsNullOrEmpty(_options.KeyPrefix) ? key : $"{_options.KeyPrefix}:{key}";
+    public async Task ReSubscribeAsync()
+    {
+        if (_options.EnablePubSub)
+        {
+            try
+            {
+                await SubscribeToInvalidationEventsAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to re-subscribe to invalidation events.");
+            }
+        }
+    }
 
     public void Dispose()
     {
-        _redisConnection.ConnectionFailed -= OnConnectionFailed;
-        _redisConnection.ConnectionRestored -= OnConnectionRestored;
+        _redisSubscriber.UnsubscribeAllAsync().GetAwaiter().GetResult();
     }
 }
